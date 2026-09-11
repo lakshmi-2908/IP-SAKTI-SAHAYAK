@@ -965,17 +965,29 @@ export async function ingestDocument(payload: IngestDocumentPayload): Promise<{
     throw new Error('Document produced 0 valid chunks.');
   }
 
-  // Step 2: Compute embedding vectors for each chunk
-  const chunksWithEmbeddings = await Promise.all(
-    rawChunks.map(async (c, idx) => {
-      const embedding = await getChunkEmbedding(c.text);
-      return {
-        text: c.text,
-        embedding,
-        section_label: c.section_label || `Section ${idx + 1}`,
-      };
-    })
-  );
+  // Step 2: Compute embedding vectors for each chunk in controlled batches
+  // to avoid hitting Gemini free-tier burst rate limits (429 Too Many Requests)
+  const chunksWithEmbeddings: Array<{ text: string; embedding: number[]; section_label: string }> = [];
+  const BATCH_SIZE = 3;
+  for (let i = 0; i < rawChunks.length; i += BATCH_SIZE) {
+    const batch = rawChunks.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (c, bIdx) => {
+        const globalIdx = i + bIdx;
+        const embedding = await getChunkEmbedding(c.text);
+        return {
+          text: c.text,
+          embedding,
+          section_label: c.section_label || `Section ${globalIdx + 1}`,
+        };
+      })
+    );
+    chunksWithEmbeddings.push(...batchResults);
+    if (i + BATCH_SIZE < rawChunks.length) {
+      // Small pause between batches to prevent instantaneous rate-limit exhaustion
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
 
   const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const uploadDate = new Date().toISOString();

@@ -461,6 +461,59 @@ async function searchCandidateChunks(
             similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
           };
         });
+      } else if (error) {
+        console.warn('Supabase match_chunks RPC note:', error.message);
+        // Direct REST table query fallback if match_chunks RPC is not installed
+        const { data: dbChunks } = await supabase
+          .from('chunks')
+          .select('id, document_id, text, section_label, jurisdiction, category, language, embedding')
+          .eq('jurisdiction', jurisdiction)
+          .limit(100);
+
+        if (dbChunks && dbChunks.length > 0) {
+          const docIds = Array.from(new Set(dbChunks.map((c: any) => c.document_id)));
+          const { data: docs } = await supabase
+            .from('documents')
+            .select('id, title, authority, source_url, status')
+            .in('id', docIds);
+
+          const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
+          const activeChunks = dbChunks.filter((c: any) => {
+            const doc = docMap.get(c.document_id);
+            return !doc || doc.status !== 'deactivated';
+          });
+
+          const scored = activeChunks.map((c: any) => {
+            const parentDoc = docMap.get(c.document_id);
+            let emb = c.embedding;
+            if (typeof emb === 'string') {
+              try {
+                emb = JSON.parse(emb);
+              } catch {
+                emb = [];
+              }
+            }
+            const sim = Array.isArray(emb) && emb.length > 0 ? computeCosineSimilarity(queryVector, emb) : 0;
+            return {
+              id: c.id,
+              document_id: c.document_id,
+              text: c.text,
+              sectionLabel: c.section_label,
+              jurisdiction: c.jurisdiction,
+              category: c.category,
+              language: c.language,
+              documentTitle: parentDoc?.title || 'Statutory Source',
+              authority: parentDoc?.authority || null,
+              sourceUrl: parentDoc?.source_url || null,
+              similarity: sim,
+            };
+          });
+
+          scored.sort((a, b) => b.similarity - a.similarity);
+          if (scored.length > 0 && scored[0].similarity >= 0.35) {
+            return scored.slice(0, 8);
+          }
+        }
       }
     } catch (rpcErr: any) {
       console.warn('Supabase match_chunks RPC failed:', rpcErr.message);
