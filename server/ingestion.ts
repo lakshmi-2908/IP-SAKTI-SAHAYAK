@@ -657,9 +657,11 @@ export function splitIntoChunks(text: string): { text: string; section_label: st
     // Check if paragraph starts with a section label
     const headingMatch = trimmed.match(headingRegex);
     if (headingMatch) {
-      currentSectionLabel = headingMatch[0].trim();
+      const rawHeading = headingMatch[0].trim().split('\n')[0].split(/[:\.]\s/)[0];
+      currentSectionLabel = rawHeading.length > 50 ? rawHeading.slice(0, 47) + '...' : rawHeading;
     } else if (trimmed.startsWith('#')) {
-      currentSectionLabel = trimmed.split('\n')[0].replace(/^#+\s*/, '').trim();
+      const rawHeading = trimmed.split('\n')[0].replace(/^#+\s*/, '').trim();
+      currentSectionLabel = rawHeading.length > 50 ? rawHeading.slice(0, 47) + '...' : rawHeading;
     }
 
     const words = trimmed.split(/\s+/);

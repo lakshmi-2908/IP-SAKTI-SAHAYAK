@@ -949,51 +949,102 @@ ${input.question}`;
 
   const ai = getGenAI();
 
-  async function generateLegalAnswer(prompt: string): Promise<string> {
-    if (!ai) return '';
-    const models = ['gemini-3.8-flash', 'gemini-flash-latest'];
-    for (const model of models) {
+  async function callOpenRouterChatCompletion(system: string, user: string): Promise<string> {
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
+    if (!apiKey || !apiKey.trim() || apiKey.includes('your-openrouter')) return '';
+    const models = [
+      'google/gemini-2.0-flash-001',
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'mistralai/mistral-small-24b-instruct-2501:free',
+      'qwen/qwen-2.5-72b-instruct:free',
+    ];
+    for (const m of models) {
       try {
-        const res = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: {
-            systemInstruction,
-            temperature: 0.1,
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://ayush-setu.onrender.com',
+            'X-Title': 'IP-SAKTI Sahayak',
           },
+          body: JSON.stringify({
+            model: m,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            temperature: 0.1,
+            max_tokens: 1200,
+          }),
         });
-        const text = res.text?.trim();
-        if (text) return text;
-      } catch (err: any) {
-        console.log(`[executePrompt5Pipeline] Model ${model} generation note (${err?.status || 'skipped'}), trying fallback.`);
+        if (res.ok) {
+          const json = await res.json();
+          const text = json?.choices?.[0]?.message?.content?.trim();
+          if (text) {
+            console.log(`[executePrompt5Pipeline] Successfully generated legal answer via OpenRouter model: ${m}`);
+            return text;
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[executePrompt5Pipeline] OpenRouter model ${m} failed:`, e?.message);
       }
     }
     return '';
   }
 
-  let generatedText = '';
+  async function generateLegalAnswer(prompt: string): Promise<string> {
+    if (ai) {
+      const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+      for (const model of models) {
+        try {
+          const res = await ai.models.generateContent({
+            model,
+            contents: prompt,
+            config: {
+              systemInstruction,
+              temperature: 0.1,
+            },
+          });
+          const text = res.text?.trim();
+          if (text) return text;
+        } catch (err: any) {
+          console.log(`[executePrompt5Pipeline] Gemini model ${model} generation note (${err?.status || 'skipped'}), trying fallback.`);
+        }
+      }
+    }
 
-  if (ai) {
-    generatedText = await generateLegalAnswer(userPrompt);
+    // OpenRouter fallback if Gemini is rate limited or unavailable
+    const orText = await callOpenRouterChatCompletion(systemInstruction, prompt);
+    if (orText) return orText;
+
+    return '';
   }
+
+  let generatedText = '';
+  generatedText = await generateLegalAnswer(userPrompt);
 
   if (!generatedText) {
     // Grounded fallback generator strictly drawn from surviving chunks
     const topChunk = survivingChunks[0];
     const secondChunk = survivingChunks.length > 1 ? survivingChunks[1] : null;
+    const cleanLabel = (c: CandidateChunk) => {
+      const lbl = c.sectionLabel || '';
+      return lbl.length > 40 || lbl.includes(':') ? 'Relevant Provision' : lbl || 'Relevant Provision';
+    };
     if (isHindi) {
       const topHindi = getHindiParaphraseFallback(topChunk);
       if (secondChunk) {
         const secondHindi = getHindiParaphraseFallback(secondChunk);
-        generatedText = `${topChunk.documentTitle} (${topChunk.sectionLabel || 'प्रावधान'}) के अनुसार, ${topHindi} [1]। इसके अतिरिक्त, ${secondChunk.documentTitle} (${secondChunk.sectionLabel || 'प्रावधान'}) के तहत, ${secondHindi} [2]।`;
+        generatedText = `${topChunk.documentTitle} (${cleanLabel(topChunk)}) के अनुसार, ${topHindi} [1]। इसके अतिरिक्त, ${secondChunk.documentTitle} (${cleanLabel(secondChunk)}) के तहत, ${secondHindi} [2]।`;
       } else {
-        generatedText = `${topChunk.documentTitle} (${topChunk.sectionLabel || 'प्रावधान'}) के अनुसार, ${topHindi} [1]।`;
+        generatedText = `${topChunk.documentTitle} (${cleanLabel(topChunk)}) के अनुसार, ${topHindi} [1]।`;
       }
     } else {
       if (secondChunk) {
-        generatedText = `Under ${topChunk.documentTitle} (${topChunk.sectionLabel || 'Section'}), ${topChunk.text.slice(0, 240).trim()} [1]. In addition, under ${secondChunk.documentTitle} (${secondChunk.sectionLabel || 'Section'}), ${secondChunk.text.slice(0, 240).trim()} [2].`;
+        generatedText = `Based on ${topChunk.documentTitle} (${cleanLabel(topChunk)}): ${topChunk.text.slice(0, 220).trim()}... [1]\n\nAdditionally, according to ${secondChunk.documentTitle} (${cleanLabel(secondChunk)}): ${secondChunk.text.slice(0, 220).trim()}... [2]`;
       } else {
-        generatedText = `Under ${topChunk.documentTitle} (${topChunk.sectionLabel || 'Section'}), ${topChunk.text.slice(0, 280).trim()} [1].`;
+        generatedText = `Based on ${topChunk.documentTitle} (${cleanLabel(topChunk)}): ${topChunk.text.slice(0, 260).trim()}... [1]`;
       }
     }
   }
