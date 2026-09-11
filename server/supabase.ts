@@ -77,6 +77,16 @@ export function isPostgresDirectAvailable(): boolean {
   if (!databaseUrl || databaseUrl.includes('[YOUR-PASSWORD]') || databaseUrl.includes('[PASSWORD]')) {
     return false;
   }
+  // Detect direct Supabase port 5432 which is IPv6-only and fails on Render
+  if (databaseUrl.includes('.supabase.co:5432') && !databaseUrl.includes('pooler.supabase.com')) {
+    if (!hasLoggedDirectPgNotice) {
+      hasLoggedDirectPgNotice = true;
+      console.log(
+        '[Postgres Pool] Detected direct Supabase endpoint (:5432). Supabase direct endpoints are IPv6-only. Routing database operations seamlessly via Supabase REST/RPC API. (To use direct TCP Postgres on Render, use the Supabase Connection Pooler string ending in :6543).'
+      );
+    }
+    return false;
+  }
   if (Date.now() < pgDirectUnreachableUntil) {
     return false;
   }
@@ -84,9 +94,14 @@ export function isPostgresDirectAvailable(): boolean {
 }
 
 /**
- * Returns a lazily-initialized PostgreSQL pool if DATABASE_URL or direct connection is provided.
+ * Returns a lazily-initialized PostgreSQL pool if DATABASE_URL or direct connection is provided
+ * and the circuit breaker is healthy.
  */
 export function getPgPool(): pg.Pool | null {
+  if (!isPostgresDirectAvailable()) {
+    return null;
+  }
+
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl || databaseUrl.includes('[YOUR-PASSWORD]') || databaseUrl.includes('[PASSWORD]')) {
     return null;

@@ -1060,7 +1060,9 @@ export async function ingestDocument(payload: IngestDocumentPayload): Promise<{
         }
       } catch (err: any) {
         markPostgresDirectFailure(err);
-        console.warn('Postgres connection pool error:', err.message);
+        if (!err?.message?.includes('ENETUNREACH')) {
+          console.warn('Postgres connection pool note:', err.message);
+        }
       }
     }
   }
