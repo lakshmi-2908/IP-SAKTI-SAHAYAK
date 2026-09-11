@@ -1,5 +1,5 @@
 import { getGenAI, getChunkEmbedding, getLocalChunks, getLocalDocuments, EMBEDDING_MODEL, EMBEDDING_DIMENSION } from './ingestion';
-import { getPgPool, getSupabaseClient } from './supabase';
+import { getPgPool, getSupabaseClient, isPostgresDirectAvailable, markPostgresDirectFailure } from './supabase';
 
 export interface AskQuestionInput {
   question: string;
@@ -369,56 +369,58 @@ async function searchCandidateChunks(
   queryVector: number[],
   jurisdiction: 'india' | 'international'
 ): Promise<CandidateChunk[]> {
-  const pool = getPgPool();
-
-  // Try PostgreSQL direct connection
-  if (pool) {
-    try {
-      const client = await pool.connect();
+  // Try PostgreSQL direct connection if available
+  if (isPostgresDirectAvailable()) {
+    const pool = getPgPool();
+    if (pool) {
       try {
-        const query = `
-          SELECT 
-            c.id,
-            c.document_id,
-            c.text,
-            c.section_label,
-            c.jurisdiction,
-            c.category,
-            c.language,
-            d.title AS document_title,
-            d.authority,
-            d.source_url,
-            (1 - (c.embedding <=> $1::vector))::float AS similarity
-          FROM chunks c
-          JOIN documents d ON d.id = c.document_id
-          WHERE c.jurisdiction = $2
-            AND c.embedding IS NOT NULL
-            AND d.status = 'active'
-          ORDER BY c.embedding <=> $1::vector ASC
-          LIMIT 8;
-        `;
-        const vectorStr = `[${queryVector.join(',')}]`;
-        const res = await client.query(query, [vectorStr, jurisdiction]);
-        if (res.rows.length > 0) {
-          return res.rows.map((r: any) => ({
-            id: r.id,
-            document_id: r.document_id,
-            text: r.text,
-            sectionLabel: r.section_label,
-            jurisdiction: r.jurisdiction,
-            category: r.category,
-            language: r.language,
-            documentTitle: r.document_title || 'Statutory Source',
-            authority: r.authority,
-            sourceUrl: r.source_url,
-            similarity: parseFloat(r.similarity) || 0,
-          }));
+        const client = await pool.connect();
+        try {
+          const query = `
+            SELECT 
+              c.id,
+              c.document_id,
+              c.text,
+              c.section_label,
+              c.jurisdiction,
+              c.category,
+              c.language,
+              d.title AS document_title,
+              d.authority,
+              d.source_url,
+              (1 - (c.embedding <=> $1::vector))::float AS similarity
+            FROM chunks c
+            JOIN documents d ON d.id = c.document_id
+            WHERE c.jurisdiction = $2
+              AND c.embedding IS NOT NULL
+              AND d.status = 'active'
+            ORDER BY c.embedding <=> $1::vector ASC
+            LIMIT 8;
+          `;
+          const vectorStr = `[${queryVector.join(',')}]`;
+          const res = await client.query(query, [vectorStr, jurisdiction]);
+          if (res.rows.length > 0) {
+            return res.rows.map((r: any) => ({
+              id: r.id,
+              document_id: r.document_id,
+              text: r.text,
+              sectionLabel: r.section_label,
+              jurisdiction: r.jurisdiction,
+              category: r.category,
+              language: r.language,
+              documentTitle: r.document_title || 'Statutory Source',
+              authority: r.authority,
+              sourceUrl: r.source_url,
+              similarity: parseFloat(r.similarity) || 0,
+            }));
+          }
+        } finally {
+          client.release();
         }
-      } finally {
-        client.release();
+      } catch (err: any) {
+        markPostgresDirectFailure(err);
+        console.warn('Postgres direct search failed, trying Supabase REST/In-memory:', err.message);
       }
-    } catch (err: any) {
-      console.warn('Postgres direct search failed, trying Supabase REST/In-memory:', err.message);
     }
   }
 
@@ -502,24 +504,27 @@ async function countActiveDocumentsInJurisdictionAndCategory(
   jurisdiction: 'india' | 'international',
   category?: string | null
 ): Promise<number> {
-  const pool = getPgPool();
-  if (pool) {
-    try {
-      const client = await pool.connect();
+  if (isPostgresDirectAvailable()) {
+    const pool = getPgPool();
+    if (pool) {
       try {
-        let sql = `SELECT COUNT(*)::int as count FROM documents WHERE jurisdiction = $1 AND status = 'active'`;
-        const params: any[] = [jurisdiction];
-        if (category) {
-          sql += ` AND category = $2`;
-          params.push(category);
+        const client = await pool.connect();
+        try {
+          let sql = `SELECT COUNT(*)::int as count FROM documents WHERE jurisdiction = $1 AND status = 'active'`;
+          const params: any[] = [jurisdiction];
+          if (category) {
+            sql += ` AND category = $2`;
+            params.push(category);
+          }
+          const res = await client.query(sql, params);
+          return res.rows[0]?.count || 0;
+        } finally {
+          client.release();
         }
-        const res = await client.query(sql, params);
-        return res.rows[0]?.count || 0;
-      } finally {
-        client.release();
+      } catch (err: any) {
+        markPostgresDirectFailure(err);
+        console.warn('Postgres countActiveDocuments error:', err.message);
       }
-    } catch (err: any) {
-      console.warn('Postgres countActiveDocuments error:', err.message);
     }
   }
 

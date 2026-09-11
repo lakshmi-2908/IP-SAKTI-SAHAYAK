@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { getSupabaseClient, getPgPool } from './supabase';
+import { getSupabaseClient, getPgPool, isPostgresDirectAvailable, markPostgresDirectFailure } from './supabase';
 
 export interface MetadataSuggestion {
   jurisdiction: 'india' | 'international';
@@ -76,68 +76,71 @@ export function getLocalChunks(): IngestedChunkRecord[] {
  * Fetches all rows from the documents table across Postgres, Supabase, and in-memory registry.
  */
 export async function getAllDocuments(): Promise<IngestedDocRecord[]> {
-  const pgPool = getPgPool();
-  if (pgPool) {
-    try {
-      const client = await pgPool.connect();
+  if (isPostgresDirectAvailable()) {
+    const pgPool = getPgPool();
+    if (pgPool) {
       try {
-        const res = await client.query(`
-          SELECT 
-            d.id::text as id,
-            d.title,
-            d.authority,
-            d.jurisdiction,
-            d.category,
-            d.language,
-            d.source_url,
-            d.upload_date::text as upload_date,
-            d.status,
-            d.version,
-            COUNT(c.id)::int as chunk_count
-          FROM documents d
-          LEFT JOIN chunks c ON c.document_id = d.id
-          GROUP BY d.id
-          ORDER BY d.upload_date DESC;
-        `);
-        if (res.rows.length > 0) {
-          for (const row of res.rows) {
-            const existing = localDocuments.find((d) => d.id === row.id);
-            if (existing) {
-              existing.status = row.status || 'active';
-              existing.title = row.title;
-              existing.authority = row.authority;
-              existing.jurisdiction = row.jurisdiction;
-              existing.category = row.category;
-              existing.language = row.language;
-              existing.source_url = row.source_url;
-              existing.chunk_count = row.chunk_count || 1;
-            } else {
-              localDocuments.push({
-                id: row.id,
-                title: row.title,
-                authority: row.authority,
-                jurisdiction: row.jurisdiction,
-                category: row.category,
-                language: row.language,
-                source_url: row.source_url,
-                upload_date: row.upload_date,
-                status: row.status || 'active',
-                version: row.version || 1,
-                chunk_count: row.chunk_count || 1,
-              });
+        const client = await pgPool.connect();
+        try {
+          const res = await client.query(`
+            SELECT 
+              d.id::text as id,
+              d.title,
+              d.authority,
+              d.jurisdiction,
+              d.category,
+              d.language,
+              d.source_url,
+              d.upload_date::text as upload_date,
+              d.status,
+              d.version,
+              COUNT(c.id)::int as chunk_count
+            FROM documents d
+            LEFT JOIN chunks c ON c.document_id = d.id
+            GROUP BY d.id
+            ORDER BY d.upload_date DESC;
+          `);
+          if (res.rows.length > 0) {
+            for (const row of res.rows) {
+              const existing = localDocuments.find((d) => d.id === row.id);
+              if (existing) {
+                existing.status = row.status || 'active';
+                existing.title = row.title;
+                existing.authority = row.authority;
+                existing.jurisdiction = row.jurisdiction;
+                existing.category = row.category;
+                existing.language = row.language;
+                existing.source_url = row.source_url;
+                existing.chunk_count = row.chunk_count || 1;
+              } else {
+                localDocuments.push({
+                  id: row.id,
+                  title: row.title,
+                  authority: row.authority,
+                  jurisdiction: row.jurisdiction,
+                  category: row.category,
+                  language: row.language,
+                  source_url: row.source_url,
+                  upload_date: row.upload_date,
+                  status: row.status || 'active',
+                  version: row.version || 1,
+                  chunk_count: row.chunk_count || 1,
+                });
+              }
             }
+            return res.rows.map((r: any) => ({
+              ...r,
+              status: (r.status || 'active') as 'active' | 'deactivated',
+              chunk_count: r.chunk_count || 1,
+            }));
           }
-          return res.rows.map((r: any) => ({
-            ...r,
-            status: (r.status || 'active') as 'active' | 'deactivated',
-            chunk_count: r.chunk_count || 1,
-          }));
+        } finally {
+          client.release();
         }
-      } finally {
-        client.release();
+      } catch (e: any) {
+        markPostgresDirectFailure(e);
+        console.warn('[getAllDocuments] Postgres query fallback:', e.message);
       }
-    } catch (e: any) {
-      console.warn('[getAllDocuments] Postgres query fallback:', e.message);
     }
   }
 
@@ -204,42 +207,45 @@ export async function updateDocumentStatus(
     }
   }
 
-  // 2. Update PostgreSQL if connected
-  const pgPool = getPgPool();
-  if (pgPool) {
-    try {
-      const client = await pgPool.connect();
+  // 2. Update PostgreSQL if connected and available
+  if (isPostgresDirectAvailable()) {
+    const pgPool = getPgPool();
+    if (pgPool) {
       try {
-        const res = await client.query(
-          `UPDATE documents SET status = $1 WHERE id::text = $2 RETURNING *`,
-          [normalizedStatus, documentId]
-        );
-        if (res.rows.length > 0) {
-          const row = res.rows[0];
-          if (foundDoc) {
-            foundDoc.status = row.status;
-          } else {
-            foundDoc = {
-              id: row.id,
-              title: row.title,
-              authority: row.authority,
-              jurisdiction: row.jurisdiction,
-              category: row.category,
-              language: row.language,
-              source_url: row.source_url,
-              upload_date: row.upload_date,
-              status: row.status,
-              version: row.version || 1,
-              chunk_count: 1,
-            };
-            localDocuments.push(foundDoc);
+        const client = await pgPool.connect();
+        try {
+          const res = await client.query(
+            `UPDATE documents SET status = $1 WHERE id::text = $2 RETURNING *`,
+            [normalizedStatus, documentId]
+          );
+          if (res.rows.length > 0) {
+            const row = res.rows[0];
+            if (foundDoc) {
+              foundDoc.status = row.status;
+            } else {
+              foundDoc = {
+                id: row.id,
+                title: row.title,
+                authority: row.authority,
+                jurisdiction: row.jurisdiction,
+                category: row.category,
+                language: row.language,
+                source_url: row.source_url,
+                upload_date: row.upload_date,
+                status: row.status,
+                version: row.version || 1,
+                chunk_count: 1,
+              };
+              localDocuments.push(foundDoc);
+            }
           }
+        } finally {
+          client.release();
         }
-      } finally {
-        client.release();
+      } catch (err: any) {
+        markPostgresDirectFailure(err);
+        console.warn('Postgres document update failed, trying Supabase REST:', err.message);
       }
-    } catch (e: any) {
-      console.warn('[updateDocumentStatus] Postgres update fallback:', e.message);
     }
   }
 
@@ -711,13 +717,98 @@ export function splitIntoChunks(text: string): { text: string; section_label: st
   return chunks;
 }
 
+export const OPENROUTER_EMBEDDING_MODEL = 'nvidia/nemotron-3-embed-1b:free';
+
+/**
+ * Calls OpenRouter free embedding model nvidia/nemotron-3-embed-1b:free as fallback
+ * when Gemini embedding is rate-limited (429) or unavailable.
+ * Strictly verifies and adapts dimension to vector(768).
+ */
+export async function getOpenRouterNemotronEmbedding(text: string): Promise<number[] | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey || !apiKey.trim() || apiKey.includes('your-openrouter')) {
+    return null;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const res = await fetch('https://openrouter.ai/api/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`,
+        'HTTP-Referer': 'https://ai.studio',
+        'X-Title': 'IP-SAKTI Sahayak',
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_EMBEDDING_MODEL,
+        input: text,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(
+        `[getChunkEmbedding] OpenRouter ${OPENROUTER_EMBEDDING_MODEL} returned ${res.status}: ${errText.slice(0, 200)}`
+      );
+      return null;
+    }
+
+    const json = (await res.json()) as any;
+    const rawVector: number[] = json?.data?.[0]?.embedding;
+
+    if (!Array.isArray(rawVector) || rawVector.length === 0) {
+      console.warn(`[getChunkEmbedding] OpenRouter ${OPENROUTER_EMBEDDING_MODEL} returned empty or invalid embedding format.`);
+      return null;
+    }
+
+    const rawDim = rawVector.length;
+    console.log(`[getChunkEmbedding] OpenRouter ${OPENROUTER_EMBEDDING_MODEL} returned vector with dimension ${rawDim}.`);
+
+    // Verify compatibility with vector(768)
+    if (rawDim === EMBEDDING_DIMENSION) {
+      const norm = Math.sqrt(rawVector.reduce((sum, v) => sum + v * v, 0)) || 1;
+      return rawVector.map((v) => Number((v / norm).toFixed(6)));
+    } else if (rawDim > EMBEDDING_DIMENSION) {
+      // Safely project/truncate to EMBEDDING_DIMENSION (768) and L2-normalize
+      console.log(
+        `[getChunkEmbedding] Truncating OpenRouter dimension from ${rawDim} to ${EMBEDDING_DIMENSION} and L2-normalizing for vector(768) compatibility.`
+      );
+      const sliced = rawVector.slice(0, EMBEDDING_DIMENSION);
+      const norm = Math.sqrt(sliced.reduce((sum, v) => sum + v * v, 0)) || 1;
+      return sliced.map((v) => Number((v / norm).toFixed(6)));
+    } else {
+      // Zero-pad to EMBEDDING_DIMENSION (768) and L2-normalize
+      console.log(
+        `[getChunkEmbedding] Padding OpenRouter dimension from ${rawDim} to ${EMBEDDING_DIMENSION} and L2-normalizing.`
+      );
+      const padded = new Array(EMBEDDING_DIMENSION).fill(0);
+      for (let i = 0; i < rawDim; i++) padded[i] = rawVector[i];
+      const norm = Math.sqrt(padded.reduce((sum, v) => sum + v * v, 0)) || 1;
+      return padded.map((v) => Number((v / norm).toFixed(6)));
+    }
+  } catch (err: any) {
+    console.warn(`[getChunkEmbedding] OpenRouter embedding error:`, err?.message || err);
+    return null;
+  }
+}
+
 /**
  * Computes embedding vector with EXACT dimension 768.
  *
  * Tries each model in EMBEDDING_MODEL_CHAIN in order (currently
- * 'gemini-embedding-2' GA, then the long-lived 'gemini-embedding-001'), so a
- * single retired/unavailable alias doesn't take embeddings offline. Only after
- * every model in the chain fails does this fall back to the deterministic
+ * 'gemini-embedding-2' GA, then the long-lived 'gemini-embedding-001'), with
+ * retry/backoff on 429 rate limit errors.
+ *
+ * If all Gemini models fail or are rate-limited, falls back to OpenRouter
+ * free embedding ('nvidia/nemotron-3-embed-1b:free').
+ *
+ * If OpenRouter is unavailable or unconfigured, falls back to the deterministic
  * offline vector generator.
  */
 export async function getChunkEmbedding(text: string): Promise<number[]> {
@@ -725,42 +816,73 @@ export async function getChunkEmbedding(text: string): Promise<number[]> {
 
   if (ai) {
     for (const model of EMBEDDING_MODEL_CHAIN) {
-      try {
-        const response = await ai.models.embedContent({
-          model,
-          contents: text,
-          config: {
-            outputDimensionality: EMBEDDING_DIMENSION, // 768 dimension
-          },
-        });
+      // Try with up to 1 retry on 429 rate limits
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const response = await ai.models.embedContent({
+            model,
+            contents: text,
+            config: {
+              outputDimensionality: EMBEDDING_DIMENSION, // 768 dimension
+            },
+          });
 
-        const values = response.embeddings?.[0]?.values || (response as any).embedding?.values;
-        if (values && values.length > 0) {
-          if (values.length === EMBEDDING_DIMENSION) {
-            return values;
-          } else if (values.length > EMBEDDING_DIMENSION) {
-            // Truncate to EMBEDDING_DIMENSION (Matryoshka representation) and L2-normalize
-            const sliced = values.slice(0, EMBEDDING_DIMENSION);
-            const norm = Math.sqrt(sliced.reduce((sum, v) => sum + v * v, 0)) || 1;
-            return sliced.map((v) => Number((v / norm).toFixed(6)));
-          } else {
-            // Zero-pad to EMBEDDING_DIMENSION and normalize
-            const padded = new Array(EMBEDDING_DIMENSION).fill(0);
-            for (let i = 0; i < values.length; i++) padded[i] = values[i];
-            const norm = Math.sqrt(padded.reduce((sum, v) => sum + v * v, 0)) || 1;
-            return padded.map((v) => Number((v / norm).toFixed(6)));
+          const values = response.embeddings?.[0]?.values || (response as any).embedding?.values;
+          if (values && values.length > 0) {
+            if (values.length === EMBEDDING_DIMENSION) {
+              return values;
+            } else if (values.length > EMBEDDING_DIMENSION) {
+              // Truncate to EMBEDDING_DIMENSION (Matryoshka representation) and L2-normalize
+              const sliced = values.slice(0, EMBEDDING_DIMENSION);
+              const norm = Math.sqrt(sliced.reduce((sum, v) => sum + v * v, 0)) || 1;
+              return sliced.map((v) => Number((v / norm).toFixed(6)));
+            } else {
+              // Zero-pad to EMBEDDING_DIMENSION and normalize
+              const padded = new Array(EMBEDDING_DIMENSION).fill(0);
+              for (let i = 0; i < values.length; i++) padded[i] = values[i];
+              const norm = Math.sqrt(padded.reduce((sum, v) => sum + v * v, 0)) || 1;
+              return padded.map((v) => Number((v / norm).toFixed(6)));
+            }
           }
+          console.log(`[getChunkEmbedding] Model ${model} returned no embedding values, trying next fallback.`);
+          break; // Break attempt loop to try next model in chain
+        } catch (err: any) {
+          const is429 =
+            err?.status === 429 ||
+            err?.message?.includes('429') ||
+            err?.message?.includes('RESOURCE_EXHAUSTED') ||
+            err?.message?.includes('quota') ||
+            err?.message?.includes('rate');
+
+          if (is429 && attempt === 0) {
+            console.log(`[getChunkEmbedding] Model ${model} rate-limited (429), waiting 1.2s before retry...`);
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            continue;
+          }
+
+          console.log(
+            `[getChunkEmbedding] Model ${model} note (${err?.status || 'access restricted'}), trying next fallback.`
+          );
+          break; // Break attempt loop to try next model in chain
         }
-        console.log(`[getChunkEmbedding] Model ${model} returned no embedding values, trying next fallback.`);
-      } catch (err: any) {
-        console.log(`[getChunkEmbedding] Model ${model} note (${err?.status || 'access restricted'}), trying next fallback.`);
       }
     }
-    console.log('[getChunkEmbedding] All embedding models in EMBEDDING_MODEL_CHAIN failed, generating deterministic semantic vector.');
   }
 
-  // Deterministic 768-dim pseudo-semantic vector generator for offline/dev environments
-  // or when every configured Gemini embedding model is unavailable.
+  // 2. OpenRouter Free Fallback: nvidia/nemotron-3-embed-1b:free
+  try {
+    const openRouterVector = await getOpenRouterNemotronEmbedding(text);
+    if (openRouterVector && openRouterVector.length === EMBEDDING_DIMENSION) {
+      console.log(`[getChunkEmbedding] Successfully generated 768-dim vector via OpenRouter ${OPENROUTER_EMBEDDING_MODEL}.`);
+      return openRouterVector;
+    }
+  } catch (orErr: any) {
+    console.warn(`[getChunkEmbedding] OpenRouter fallback note:`, orErr?.message || orErr);
+  }
+
+  // 3. Deterministic 768-dim pseudo-semantic vector generator for offline/dev environments
+  // or when every configured Gemini and OpenRouter embedding model is unavailable.
+  console.log('[getChunkEmbedding] All embedding providers failed, generating deterministic semantic vector.');
   return generateDeterministicVector768(text);
 }
 
@@ -852,84 +974,86 @@ export async function ingestDocument(payload: IngestDocumentPayload): Promise<{
 
   // Step 3 & 4: Persistence
   const supabase = getSupabaseClient();
-  const pgPool = getPgPool();
-
   let persistedTo: 'supabase' | 'postgres' | 'in_memory' = 'in_memory';
 
-  if (pgPool) {
-    try {
-      const client = await pgPool.connect();
+  if (isPostgresDirectAvailable()) {
+    const pgPool = getPgPool();
+    if (pgPool) {
       try {
-        await client.query('BEGIN');
+        const client = await pgPool.connect();
+        try {
+          await client.query('BEGIN');
 
-        // Insert into documents table
-        const docInsertQuery = `
-          INSERT INTO documents (title, authority, jurisdiction, category, language, source_url, status, version)
-          VALUES ($1, $2, $3, $4, $5, $6, 'active', 1)
-          RETURNING id;
-        `;
-        const docRes = await client.query(docInsertQuery, [
-          title,
-          authority,
-          jurisdiction,
-          category,
-          language,
-          source_url,
-        ]);
-        const realDocId = docRes.rows[0].id;
-
-        // Insert into chunks table
-        for (const chunk of chunksWithEmbeddings) {
-          const chunkInsertQuery = `
-            INSERT INTO chunks (document_id, text, embedding, section_label, jurisdiction, category, language)
-            VALUES ($1, $2, $3, $4, $5, $6, $7);
+          // Insert into documents table
+          const docInsertQuery = `
+            INSERT INTO documents (title, authority, jurisdiction, category, language, source_url, status, version)
+            VALUES ($1, $2, $3, $4, $5, $6, 'active', 1)
+            RETURNING id;
           `;
-          // Format vector as string '[0.1, 0.2, ...]'
-          const vectorStr = `[${chunk.embedding.join(',')}]`;
-          await client.query(chunkInsertQuery, [
-            realDocId,
-            chunk.text,
-            vectorStr,
-            chunk.section_label,
+          const docRes = await client.query(docInsertQuery, [
+            title,
+            authority,
             jurisdiction,
             category,
             language,
+            source_url,
           ]);
+          const realDocId = docRes.rows[0].id;
+
+          // Insert into chunks table
+          for (const chunk of chunksWithEmbeddings) {
+            const chunkInsertQuery = `
+              INSERT INTO chunks (document_id, text, embedding, section_label, jurisdiction, category, language)
+              VALUES ($1, $2, $3, $4, $5, $6, $7);
+            `;
+            // Format vector as string '[0.1, 0.2, ...]'
+            const vectorStr = `[${chunk.embedding.join(',')}]`;
+            await client.query(chunkInsertQuery, [
+              realDocId,
+              chunk.text,
+              vectorStr,
+              chunk.section_label,
+              jurisdiction,
+              category,
+              language,
+            ]);
+          }
+
+          await client.query('COMMIT');
+          persistedTo = 'postgres';
+
+          // Also track locally
+          localDocuments.push({
+            id: realDocId,
+            title,
+            authority,
+            jurisdiction,
+            category,
+            language,
+            source_url,
+            upload_date: uploadDate,
+            status: 'active',
+            version: 1,
+            chunk_count: chunksWithEmbeddings.length,
+          });
+
+          return {
+            success: true,
+            documentId: realDocId,
+            chunksCount: chunksWithEmbeddings.length,
+            message: `Ingested ${chunksWithEmbeddings.length} chunks directly into Supabase Postgres database.`,
+            persistedTo,
+          };
+        } catch (err: any) {
+          await client.query('ROLLBACK');
+          console.warn('Direct PG ingestion failed, falling back to Supabase client / local store:', err.message);
+        } finally {
+          client.release();
         }
-
-        await client.query('COMMIT');
-        persistedTo = 'postgres';
-
-        // Also track locally
-        localDocuments.push({
-          id: realDocId,
-          title,
-          authority,
-          jurisdiction,
-          category,
-          language,
-          source_url,
-          upload_date: uploadDate,
-          status: 'active',
-          version: 1,
-          chunk_count: chunksWithEmbeddings.length,
-        });
-
-        return {
-          success: true,
-          documentId: realDocId,
-          chunksCount: chunksWithEmbeddings.length,
-          message: `Ingested ${chunksWithEmbeddings.length} chunks directly into Supabase Postgres database.`,
-          persistedTo,
-        };
       } catch (err: any) {
-        await client.query('ROLLBACK');
-        console.warn('Direct PG ingestion failed, falling back to Supabase client / local store:', err.message);
-      } finally {
-        client.release();
+        markPostgresDirectFailure(err);
+        console.warn('Postgres connection pool error:', err.message);
       }
-    } catch (err: any) {
-      console.warn('Postgres connection pool error:', err.message);
     }
   }
 
@@ -996,7 +1120,19 @@ export async function ingestDocument(payload: IngestDocumentPayload): Promise<{
           console.warn('Supabase chunks insert error:', chunkError.message);
         }
       } else {
-        console.warn('Supabase documents insert error:', docError?.message);
+        const isMissingTable =
+          docError?.message?.includes('schema cache') ||
+          docError?.message?.includes('relation') ||
+          docError?.code === 'PGRST205' ||
+          docError?.code === '42P01';
+
+        if (isMissingTable) {
+          console.warn(
+            `[Supabase Ingestion] Table 'public.documents' not found in schema cache (${docError?.message}). Please execute supabase/schema.sql in your Supabase SQL Editor. Document will be saved in active memory registry.`
+          );
+        } else {
+          console.warn('Supabase documents insert error:', docError?.message);
+        }
       }
     } catch (err: any) {
       console.warn('Supabase ingestion error:', err.message);
@@ -1072,52 +1208,55 @@ export async function getDocumentWithChunks(
   documentId?: string | null,
   chunkId?: string | null
 ): Promise<DocumentDetailResult | null> {
-  const pgPool = getPgPool();
   const supabase = getSupabaseClient();
 
   let doc: any = null;
   let chunks: any[] = [];
 
-  // Try PostgreSQL Pool first
-  if (pgPool) {
-    try {
-      const client = await pgPool.connect();
+  // Try PostgreSQL Pool first if available
+  if (isPostgresDirectAvailable()) {
+    const pgPool = getPgPool();
+    if (pgPool) {
       try {
-        if (documentId) {
-          const docRes = await client.query('SELECT * FROM documents WHERE id::text = $1', [documentId]);
-          if (docRes.rows.length > 0) {
-            doc = docRes.rows[0];
-            const chunkRes = await client.query(
-              'SELECT id, document_id, text, section_label, jurisdiction, category, language FROM chunks WHERE document_id::text = $1 ORDER BY id',
-              [documentId]
-            );
-            chunks = chunkRes.rows;
-          }
-        }
-
-        if (!doc && chunkId) {
-          const chunkRes = await client.query(
-            'SELECT id, document_id, text, section_label, jurisdiction, category, language FROM chunks WHERE id::text = $1',
-            [chunkId]
-          );
-          if (chunkRes.rows.length > 0) {
-            const foundChunk = chunkRes.rows[0];
-            const docRes = await client.query('SELECT * FROM documents WHERE id::text = $1', [foundChunk.document_id]);
+        const client = await pgPool.connect();
+        try {
+          if (documentId) {
+            const docRes = await client.query('SELECT * FROM documents WHERE id::text = $1', [documentId]);
             if (docRes.rows.length > 0) {
               doc = docRes.rows[0];
-              const sisterChunks = await client.query(
+              const chunkRes = await client.query(
                 'SELECT id, document_id, text, section_label, jurisdiction, category, language FROM chunks WHERE document_id::text = $1 ORDER BY id',
-                [foundChunk.document_id]
+                [documentId]
               );
-              chunks = sisterChunks.rows;
+              chunks = chunkRes.rows;
             }
           }
+
+          if (!doc && chunkId) {
+            const chunkRes = await client.query(
+              'SELECT id, document_id, text, section_label, jurisdiction, category, language FROM chunks WHERE id::text = $1',
+              [chunkId]
+            );
+            if (chunkRes.rows.length > 0) {
+              const foundChunk = chunkRes.rows[0];
+              const docRes = await client.query('SELECT * FROM documents WHERE id::text = $1', [foundChunk.document_id]);
+              if (docRes.rows.length > 0) {
+                doc = docRes.rows[0];
+                const sisterChunks = await client.query(
+                  'SELECT id, document_id, text, section_label, jurisdiction, category, language FROM chunks WHERE document_id::text = $1 ORDER BY id',
+                  [foundChunk.document_id]
+                );
+                chunks = sisterChunks.rows;
+              }
+            }
+          }
+        } finally {
+          client.release();
         }
-      } finally {
-        client.release();
+      } catch (err: any) {
+        markPostgresDirectFailure(err);
+        console.warn('[getDocumentWithChunks] PG error:', err.message);
       }
-    } catch (err: any) {
-      console.warn('[getDocumentWithChunks] PG error:', err.message);
     }
   }
 

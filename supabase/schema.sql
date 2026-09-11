@@ -108,3 +108,13 @@ BEGIN
   LIMIT match_count;
 END;
 $$;
+
+-- Permissions for Supabase API access (service_role, anon, authenticated)
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+
+-- Notify PostgREST to immediately refresh its schema cache
+NOTIFY pgrst, 'reload schema';
+
