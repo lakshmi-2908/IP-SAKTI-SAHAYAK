@@ -724,9 +724,17 @@ export const OPENROUTER_EMBEDDING_MODEL = 'nvidia/nemotron-3-embed-1b:free';
  * when Gemini embedding is rate-limited (429) or unavailable.
  * Strictly verifies and adapts dimension to vector(768).
  */
+let loggedOpenRouterMissingWarning = false;
+
 export async function getOpenRouterNemotronEmbedding(text: string): Promise<number[] | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
   if (!apiKey || !apiKey.trim() || apiKey.includes('your-openrouter')) {
+    if (!loggedOpenRouterMissingWarning) {
+      console.log(
+        '[getChunkEmbedding] OPENROUTER_API_KEY not found in environment. (Add OPENROUTER_API_KEY in Render > Environment to enable OpenRouter fallback).'
+      );
+      loggedOpenRouterMissingWarning = true;
+    }
     return null;
   }
 
@@ -1121,14 +1129,18 @@ export async function ingestDocument(payload: IngestDocumentPayload): Promise<{
         }
       } else {
         const isMissingTable =
-          docError?.message?.includes('schema cache') ||
-          docError?.message?.includes('relation') ||
           docError?.code === 'PGRST205' ||
-          docError?.code === '42P01';
+          docError?.code === '42P01' ||
+          docError?.message?.includes('schema cache') ||
+          docError?.message?.includes('does not exist');
 
         if (isMissingTable) {
           console.warn(
             `[Supabase Ingestion] Table 'public.documents' not found in schema cache (${docError?.message}). Please execute supabase/schema.sql in your Supabase SQL Editor. Document will be saved in active memory registry.`
+          );
+        } else if (docError?.message?.includes('violates check constraint')) {
+          console.warn(
+            `[Supabase Ingestion] Schema constraint note: ${docError.message}. Run 'ALTER TABLE public.documents DROP CONSTRAINT IF EXISTS documents_category_check;' in Supabase SQL editor to allow all categories.`
           );
         } else {
           console.warn('Supabase documents insert error:', docError?.message);

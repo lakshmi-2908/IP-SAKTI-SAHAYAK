@@ -701,6 +701,13 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[IP-SAKTI] Server running on http://0.0.0.0:${PORT}`);
+    const hasGemini = Boolean(process.env.GEMINI_API_KEY);
+    const hasOpenRouter = Boolean(process.env.OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY);
+    const hasSupabaseUrl = Boolean(process.env.SUPABASE_URL);
+    const hasServiceRole = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+    console.log(
+      `[IP-SAKTI] Environment: GEMINI_API_KEY=${hasGemini ? 'Set' : 'Missing'}, OPENROUTER_API_KEY=${hasOpenRouter ? 'Set' : 'Not configured'}, SUPABASE_URL=${hasSupabaseUrl ? 'Set' : 'Missing'}, SERVICE_ROLE=${hasServiceRole ? 'Set' : 'Missing'}`
+    );
   });
 }
 
