@@ -513,7 +513,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     }
   }, [currentIndex, queue]);
 
-  // Extract plain text from a PDF file using pdf.js
+  // Extract plain text from a PDF file using pdf.js and normalize OCR/diacritic artifacts
   const extractPdfText = async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -521,10 +521,30 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
       const page = await pdf.getPage(pageNum);
       const content = await page.getTextContent();
-      const pageText = content.items
+      const rawPageText = content.items
         .map((item: any) => ('str' in item ? item.str : ''))
         .join(' ');
-      pageTexts.push(pageText);
+
+      // Clean broken spaced-out diacritics and legacy font encoding artifacts
+      const cleaned = rawPageText
+        .replace(/\b([a-zA-Z])\s+([āīūṛḷēōĀĪŪṚḶĒŌ])\s+([a-zA-Z])\b/g, '$1$2$3')
+        .replace(/([a-zA-ZāīūṛḷēōĀĪŪṚḶĒŌ])\s+([āīūṛḷēō])/g, '$1$2')
+        .replace(/([āīūṛḷēō])\s+([a-zA-Zāīūṛḷēō])/g, '$1$2')
+        .replace(/Kalpan\s*ā\s*Paribh\s*ā\s*¾\s*ā/gi, 'Kalpana Paribhasha')
+        .replace(/Ś\s*ā\s*r\s*¬\s*g\s*a\s*d\s*h\s*a\s*r\s*a/gi, 'Sharangadhara')
+        .replace(/Caraka\s*sa\s*¼\s*hit\s*ā/gi, 'Charaka Samhita')
+        .replace(/p\s*ā\s*k\s*a/gi, 'paka')
+        .replace(/lak\s*¾\s*a\s*´\s*a/gi, 'lakshana')
+        .replace(/C\s*ū\s*r\s*´\s*a/gi, 'Churna')
+        .replace(/¾/g, 'sh')
+        .replace(/¼/g, 'm')
+        .replace(/´/g, 'n')
+        .replace(/¬/g, 'ng')
+        .replace(/±/g, 'D')
+        .replace(/°/g, 't')
+        .replace(/[ \t]+/g, ' ');
+
+      pageTexts.push(cleaned);
     }
     return pageTexts.join('\n\n');
   };

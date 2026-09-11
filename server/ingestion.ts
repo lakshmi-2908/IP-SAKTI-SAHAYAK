@@ -647,20 +647,25 @@ export function splitIntoChunks(text: string): { text: string; section_label: st
   let currentChunkWords: string[] = [];
   let currentSectionLabel = 'General Provisions';
 
-  // Regex to detect section or clause labels
-  const headingRegex = /^(section\s+[0-9a-z\(\)]+|clause\s+[0-9\.]+|rule\s+[0-9a-z]+|article\s+[0-9]+|chapter\s+[0-9ivx]+|schedule\s+[0-9ivx]+|part\s+[0-9ivx]+|[0-9]+\.\s+[A-Z][^\n]+)/i;
+  // Regex to detect statutory, regulatory, pharmacopoeial, and numbered headings
+  const headingRegex = /^(section\s+[0-9a-z\(\)]+|clause\s+[0-9\.]+|rule\s+[0-9a-z]+|article\s+[0-9]+|chapter\s+[0-9ivx]+|schedule\s+[0-9ivx]+|appendix\s*[-–—:]?\s*[0-9a-z]+|part\s+[0-9ivx]+|[0-9]+(?:\.[0-9]+)*\s*[-–—:]?\s*[A-Za-z][^\n]{2,45})/i;
 
   for (const para of rawParagraphs) {
     const trimmed = para.trim();
     if (!trimmed) continue;
 
     // Check if paragraph starts with a section label
+    const firstLine = trimmed.split('\n')[0].trim();
     const headingMatch = trimmed.match(headingRegex);
     if (headingMatch) {
-      const rawHeading = headingMatch[0].trim().split('\n')[0].split(/[:\.]\s/)[0];
+      let rawHeading = headingMatch[0].trim();
+      rawHeading = rawHeading.replace(/[:\-–—\s]+$/, '').trim();
+      if (rawHeading.length < 4 || /^\d+\.?$/.test(rawHeading)) {
+        rawHeading = firstLine.split(/[:\-–—]/)[0].trim();
+      }
       currentSectionLabel = rawHeading.length > 50 ? rawHeading.slice(0, 47) + '...' : rawHeading;
     } else if (trimmed.startsWith('#')) {
-      const rawHeading = trimmed.split('\n')[0].replace(/^#+\s*/, '').trim();
+      const rawHeading = firstLine.replace(/^#+\s*/, '').trim();
       currentSectionLabel = rawHeading.length > 50 ? rawHeading.slice(0, 47) + '...' : rawHeading;
     }
 
