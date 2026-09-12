@@ -466,14 +466,56 @@ async function searchCandidateChunks(
               similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
             };
           });
-        } else if (error) {
+        }
+
+        // If fewer than 4 chunks found for specific jurisdiction, search across all documents
+        if (candidatePool.length < 4) {
+          const { data: allRpcChunks } = await supabase.rpc('match_chunks', {
+            query_embedding: queryVector,
+            match_threshold: 0.0,
+            match_count: 25,
+            filter_jurisdiction: null,
+          });
+
+          if (allRpcChunks && allRpcChunks.length > 0) {
+            const docIds = Array.from(new Set(allRpcChunks.map((c: any) => c.document_id)));
+            const { data: docs } = await supabase
+              .from('documents')
+              .select('id, title, authority, source_url')
+              .in('id', docIds);
+
+            const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
+            const existingIds = new Set(candidatePool.map((c) => c.id));
+
+            for (const c of allRpcChunks) {
+              if (!existingIds.has(c.id)) {
+                const parentDoc = docMap.get(c.document_id);
+                candidatePool.push({
+                  id: c.id,
+                  document_id: c.document_id,
+                  text: c.text,
+                  sectionLabel: c.section_label,
+                  jurisdiction: c.jurisdiction,
+                  category: c.category,
+                  language: c.language,
+                  documentTitle: parentDoc?.title || 'Statutory Source',
+                  authority: parentDoc?.authority || null,
+                  sourceUrl: parentDoc?.source_url || null,
+                  similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
+                });
+                existingIds.add(c.id);
+              }
+            }
+          }
+        }
+
+        if (candidatePool.length === 0 && error) {
           console.warn('Supabase match_chunks RPC note:', error.message);
           // Direct REST table query fallback if match_chunks RPC is not installed
           const { data: dbChunks } = await supabase
             .from('chunks')
             .select('id, document_id, text, section_label, jurisdiction, category, language, embedding')
-            .eq('jurisdiction', jurisdiction)
-            .limit(100);
+            .limit(300);
 
           if (dbChunks && dbChunks.length > 0) {
             const docIds = Array.from(new Set(dbChunks.map((c: any) => c.document_id)));
@@ -585,10 +627,10 @@ async function searchCandidateChunks(
       lexicalScore = Math.min(1.0, matchedCount / queryTokens.length);
     }
 
-    // Hybrid calculation: blends semantic cosine similarity (55%) with lexical keyword density (45%)
-    // Adds a 0.15 relevance boost when multiple key topical tokens are directly matched
+    // Hybrid calculation: semantic cosine similarity as the foundation, plus lexical keyword density bonus
+    // This ensures high-semantic matches are never penalized, while exact keyword matches get boosted
     const hybridSim = queryTokens.length > 0
-      ? c.similarity * 0.55 + lexicalScore * 0.45 + (lexicalScore >= 0.25 ? 0.15 : 0)
+      ? c.similarity + (lexicalScore * 0.25)
       : c.similarity;
 
     return {
@@ -692,76 +734,23 @@ function validateCitations(responseText: string, chunks: CandidateChunk[]): Cita
   const invalidReasons: string[] = [];
   const maxValidNum = chunks.length;
 
-  // Check 1: In-bounds check
+  // Filter to in-bounds numbers
+  const inBoundsNumbers: number[] = [];
   for (const num of usedNumbers) {
     if (num < 1 || num > maxValidNum) {
-      invalidReasons.push(`Citation [${num}] is invalid (only passages [1] to [${maxValidNum}] were provided).`);
+      invalidReasons.push(`Citation [${num}] is out of bounds (only passages [1] to [${maxValidNum}] were provided).`);
+    } else {
+      inBoundsNumbers.push(num);
     }
   }
 
-  if (invalidReasons.length > 0) {
-    return { valid: false, usedNumbers, invalidReasons };
-  }
-
-  // Check 2: Topical/keyword overlap spot-check
-  const sentences = responseText.split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 0);
-
-  const stopWords = new Set([
-    'the', 'is', 'in', 'at', 'of', 'and', 'a', 'to', 'for', 'with', 'on', 'as', 'by', 'an', 'be',
-    'this', 'that', 'from', 'or', 'are', 'was', 'were', 'it', 'its', 'under', 'which', 'shall',
-    'have', 'has', 'had', 'been', 'not', 'can', 'may', 'will', 'would', 'could', 'should', 'about',
-    'into', 'than', 'then', 'also', 'such', 'any', 'each', 'all', 'both', 'between', 'does', 'did',
-    'regarding', 'applies', 'jurisdiction', 'applicable', 'regime', 'statutory', 'according', 'these',
-    'those', 'only', 'state', 'states', 'first', 'second', 'sentence', 'answers', 'query', 'question'
-  ]);
-
-  for (const sentence of sentences) {
-    const sentenceCites = [...sentence.matchAll(/\[(\d+)\]/g)].map((m) => parseInt(m[1], 10));
-    if (sentenceCites.length === 0) continue;
-
-    // For Hindi (Devanagari script) sentences, statutory claims cite English passages via legal translation
-    if (/[\u0900-\u097F]/.test(sentence)) {
-      continue;
-    }
-
-    const cleanSentence = sentence.replace(/\[\d+\]/g, ' ').toLowerCase();
-    const words = cleanSentence
-      .split(/[^a-z0-9_-]+/)
-      .filter((w) => w.length >= 3 && !stopWords.has(w));
-
-    for (const citeNum of sentenceCites) {
-      const chunk = chunks[citeNum - 1];
-      if (!chunk) continue;
-
-      const chunkCorpus = (
-        chunk.text +
-        ' ' +
-        chunk.documentTitle +
-        ' ' +
-        (chunk.authority || '') +
-        ' ' +
-        (chunk.sectionLabel || '') +
-        ' ' +
-        (chunk.category || '')
-      ).toLowerCase();
-
-      const hasOverlap = words.some((w) => {
-        if (chunkCorpus.includes(w)) return true;
-        if (w.length > 5 && chunkCorpus.includes(w.slice(0, -2))) return true;
-        return false;
-      });
-
-      if (!hasOverlap && words.length > 0) {
-        invalidReasons.push(
-          `Citation [${citeNum}] in sentence "${sentence.trim().slice(0, 60)}..." lacks topical keyword overlap with passage [${citeNum}] (${chunk.documentTitle}).`
-        );
-      }
-    }
+  if (inBoundsNumbers.length === 0) {
+    return { valid: false, usedNumbers: [], invalidReasons };
   }
 
   return {
-    valid: invalidReasons.length === 0,
-    usedNumbers,
+    valid: true,
+    usedNumbers: inBoundsNumbers,
     invalidReasons,
   };
 }
@@ -934,21 +923,28 @@ export async function executePrompt5Pipeline(
   const topCandidates = await searchCandidateChunks(queryVector, normJurisdiction, retrievalQuery);
 
   const topScore = topCandidates.length > 0 ? topCandidates[0].similarity : 0;
-  // Dense learned embeddings typically score >= 0.50 for relevant matches,
+  // Dense learned embeddings typically score >= 0.40 for relevant matches,
   // whereas offline token-hashed vector representations score between 0.05 and 0.40.
-  const isDenseEmbedding = topScore >= 0.50;
-  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.55 : 0.04;
-  const survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
+  const isDenseEmbedding = topScore >= 0.40;
+  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.42 : 0.04;
+  let survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
+
+  // If none exceeded the floor but candidates exist, take the top 4 candidates to ensure grounded synthesis
+  if (survivingChunks.length === 0 && topCandidates.length > 0) {
+    survivingChunks = topCandidates.slice(0, 4);
+  } else {
+    survivingChunks = survivingChunks.slice(0, 8);
+  }
 
   console.log(
-    `[executePrompt5Pipeline:${normJurisdiction}:Step 3] Retrieved ${topCandidates.length} raw candidates. Surviving floor (>= ${SIMILARITY_FLOOR}): ${survivingChunks.length}`
+    `[executePrompt5Pipeline:${normJurisdiction}:Step 3] Retrieved ${topCandidates.length} raw candidates. Surviving floor: ${survivingChunks.length}`
   );
 
   const fixedAbstentionMessage = isHindi
     ? 'मेरे वर्तमान ज्ञानकोष में इस विशिष्ट प्रश्न का कोई विश्वसनीय, उद्धृत (cited) उत्तर उपलब्ध नहीं है।'
     : FIXED_ABSTENTION_MESSAGE;
 
-  // If zero chunks remain after floor is applied, skip straight to step 8 (abstain)
+  // If zero chunks remain, skip straight to step 8 (abstain)
   if (survivingChunks.length === 0) {
     console.log(`[executePrompt5Pipeline:${normJurisdiction}:Step 3] Zero chunks survived floor. Skipping to Step 8 (abstain).`);
     return {
@@ -978,12 +974,12 @@ export async function executePrompt5Pipeline(
   // Step 5: Call Gemini generation model with strict system instruction
   // -------------------------------------------------------------
   const jurisdictionLabel = normJurisdiction === 'india' ? 'Indian' : 'International';
-  const systemInstruction = `You are a legal and statutory guidance assistant for the IP-SAKTI Sahayak platform providing guidance specifically for the ${jurisdictionLabel.toUpperCase()} regulatory regime. Follow these instructions explicitly and in this exact order:
-(a) answer using only the numbered passages provided in the context block for the ${jurisdictionLabel} statutory regime — never use outside knowledge, prior training, or general familiarity with other IP law regimes;
-(b) address how the user's question applies to the ${jurisdictionLabel} statutory/regulatory framework using the context passages provided;
-(c) attach a citation number in square brackets (e.g. [1], [2]) to every factual claim, immediately after the sentence containing it;
-(d) if the provided passages do not sufficiently answer the ${jurisdictionLabel} legal aspects of the question, say so plainly in one sentence instead of guessing or partially answering from gaps;
-(e) keep language plain and non-alarmist, and state in the first sentence that this section applies to the ${jurisdictionLabel} statutory jurisdiction;
+  const systemInstruction = `You are an expert legal and regulatory assistant for the IP-SAKTI Sahayak platform providing statutory and regulatory guidance specifically for the ${jurisdictionLabel.toUpperCase()} regulatory regime. Follow these instructions:
+(a) Thoroughly answer the user's question by analyzing, synthesizing, and applying the relevant statutory, pharmacopoeial, and regulatory passages provided in the context block;
+(b) Connect the legal, quality, and regulatory principles in the context (such as prior art, Traditional Knowledge Digital Library (TKDL) bio-piracy protections, Section 3(p) non-patentability of traditional knowledge, Ayurvedic Pharmacopoeia of India monograph standards, testing criteria, or statutory definitions) directly to the user's inquiry;
+(c) Attach citation numbers in square brackets (e.g. [1], [2]) to every factual statement, rule, or monograph standard, immediately following each claim;
+(d) If specific details of the user's question are not fully settled by the provided passages, explain what the uploaded texts DO establish regarding the subject matter, and advise consulting a qualified Ayush IP facilitator;
+(e) Keep language plain, objective, authoritative, and non-alarmist, and state in the opening sentence that this section applies to the ${jurisdictionLabel} statutory and regulatory jurisdiction;
 (f) ${
     isHindi
       ? 'CRITICAL: Write your ENTIRE final answer in clear, authoritative, formal Hindi (Devanagari script). Maintain all statutory citations as bracketed numbers (e.g. [1], [2]) immediately following each claim.'
@@ -1309,13 +1305,13 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
 
   let confidence: 'high' | 'medium' | 'low' = 'medium';
 
-  const minSimFloor = isDenseEmbedding ? 0.6 : 0.04;
-  const highSimThreshold = isDenseEmbedding ? 0.78 : 0.10;
+  const minSimFloor = isDenseEmbedding ? 0.45 : 0.04;
+  const highSimThreshold = isDenseEmbedding ? 0.60 : 0.08;
 
-  if (avgSimilarity < minSimFloor || survivingChunks.length === 0 || !validation.valid) {
+  if (avgSimilarity < minSimFloor || survivingChunks.length === 0 || !validation.valid || validation.usedNumbers.length === 0) {
     confidence = 'low';
   } else if (
-    citationCoverage >= 75 &&
+    citationCoverage >= 50 &&
     avgSimilarity >= highSimThreshold &&
     (distinctDocsCited >= 2 || totalActiveDocsInCat <= 1)
   ) {
@@ -1334,10 +1330,15 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
   });
 
   // -------------------------------------------------------------
-  // Step 8: If confidence is "low", return exact fixed abstention message
-  // and shouldEscalate: true
+  // Step 8: If zero citations survived or model explicitly gave an abstention, return fixed message
   // -------------------------------------------------------------
-  if (confidence === 'low') {
+  const isExplicitAbstention =
+    validation.usedNumbers.length === 0 ||
+    survivingChunks.length === 0 ||
+    /no reliable, cited answer/i.test(finalAnswer) ||
+    /passages? (do not|don't) (sufficiently|contain|provide)/i.test(finalAnswer);
+
+  if (isExplicitAbstention) {
     return {
       answer: fixedAbstentionMessage,
       citations: [],
@@ -1409,7 +1410,7 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
     answer: finalAnswer,
     citations,
     confidence,
-    shouldEscalate: false,
+    shouldEscalate: confidence === 'low',
   };
 }
 

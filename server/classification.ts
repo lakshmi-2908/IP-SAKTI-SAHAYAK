@@ -117,24 +117,26 @@ export async function checkProductIntent(question: string): Promise<'product' | 
 
   // Fast heuristic regex for obvious formulations
   const lower = trimmed.toLowerCase();
+
+  // If question is a general patentability, licensing, or compliance inquiry,
+  // do NOT intercept with classification modal - let RAG answer it directly!
+  if (
+    lower.startsWith('can i patent') ||
+    lower.startsWith('what licence') ||
+    lower.startsWith('what license') ||
+    lower.startsWith('is my raw material') ||
+    lower.startsWith('how to patent') ||
+    lower.includes('patentability')
+  ) {
+    return 'general';
+  }
+
   const strongProductClues = [
-    'my formulation',
-    'my product',
-    'our product',
-    'our formulation',
-    'we formulated',
-    'i am developing a formulation',
-    'i developed a product',
-    'my medicine',
-    'my cream',
-    'my syrup',
-    'my churna',
-    'my oil',
-    'my capsule',
-    'my tablet',
     'ingredients:',
     'contains ashwagandha and',
     'composition:',
+    'we formulated a cream with',
+    'developing a herbal mixture of',
   ];
 
   for (const clue of strongProductClues) {

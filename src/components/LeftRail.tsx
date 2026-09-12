@@ -57,11 +57,11 @@ export const LeftRail: React.FC<LeftRailProps> = ({
       promptText: 'Can I patent my formulation?',
     },
     {
-      id: 'quick-prompt-licence',
-      title: language === 'Hindi' ? 'मुझे किस लाइसेंस की आवश्यकता है?' : 'What licence do I need?',
-      subtitle: jurisdiction === 'India' ? 'Ayush Rule 158B, Classical vs Proprietary' : 'Export, GMP & International Clearance',
+      id: 'quick-prompt-standards',
+      title: language === 'Hindi' ? 'आयुर्वेदिक फार्माकोपिया मानक' : 'Pharmacopoeia & Monograph Standards',
+      subtitle: jurisdiction === 'India' ? 'API Vol II Monographs, Asava & Arishta Criteria' : 'Botanical Quality Monograph Standards',
       icon: FileBadge,
-      promptText: 'What licence do I need?',
+      promptText: 'What are the pharmacopoeial standards and monograph requirements for formulations in the Ayurvedic Pharmacopoeia of India (API)?',
     },
     {
       id: 'quick-prompt-raw-material',
