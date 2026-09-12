@@ -73,6 +73,77 @@ export interface CandidateChunk {
   similarity: number;
 }
 
+export interface DiagnosticChunkItem {
+  rank: number;
+  id: string;
+  documentId: string;
+  documentTitle: string;
+  authority: string | null;
+  jurisdiction: string;
+  category: string;
+  sectionLabel: string;
+  similarity: number;
+  survivedFloor: boolean;
+  similarityFloor: number;
+  textSnippet: string;
+  fullText: string;
+}
+
+export interface RetrievalDiagnosticInfo {
+  timestamp: string;
+  query: string;
+  retrievalQuery: string;
+  jurisdiction: string;
+  language: string;
+  topScore: number;
+  similarityFloor: number;
+  survivingCount: number;
+  totalCandidateCount: number;
+  confidence?: 'high' | 'medium' | 'low';
+  shouldEscalate?: boolean;
+  topChunks: DiagnosticChunkItem[];
+}
+
+let lastRetrievalDiagnostic: RetrievalDiagnosticInfo | null = null;
+
+export function getLastRetrievalDiagnostic(): RetrievalDiagnosticInfo | null {
+  return lastRetrievalDiagnostic;
+}
+
+// Clean diacritics and OCR artifacts from raw PDF text
+export function cleanSanskritDiacritics(txt: string): string {
+  return txt
+    .replace(/\b([a-zA-Z])\s+([āīūṛḷēōĀĪŪṚḶĒŌ])\s+([a-zA-Z])\b/g, '$1$2$3')
+    .replace(/([a-zA-ZāīūṛḷēōĀĪŪṚḶĒŌ])\s+([āīūṛḷēō])/g, '$1$2')
+    .replace(/([āīūṛḷēō])\s+([a-zA-Zāīūṛḷēō])/g, '$1$2')
+    .replace(/Kalpan\s*ā\s*Paribh\s*ā\s*¾\s*ā/gi, 'Kalpana Paribhasha')
+    .replace(/Ś\s*ā\s*r\s*¬\s*g\s*a\s*d\s*h\s*a\s*r\s*a/gi, 'Sharangadhara')
+    .replace(/Caraka\s*sa\s*¼\s*hit\s*ā/gi, 'Charaka Samhita')
+    .replace(/p\s*ā\s*k\s*a/gi, 'paka')
+    .replace(/lak\s*¾\s*a\s*´\s*a/gi, 'lakshana')
+    .replace(/C\s*ū\s*r\s*´\s*a/gi, 'Churna')
+    .replace(/¾/g, 'sh')
+    .replace(/¼/g, 'm')
+    .replace(/´/g, 'n')
+    .replace(/¬/g, 'ng')
+    .replace(/±/g, 'D')
+    .replace(/°/g, 't')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+export function cleanSectionLabel(lbl?: string | null): string {
+  if (!lbl) return 'Relevant Provision';
+  let c = lbl.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  c = c.replace(/^[#\-\*\s]+/, '');
+  if (c.includes(':')) {
+    const parts = c.split(':');
+    if (parts[0].trim().length >= 3 && parts[0].trim().length <= 45) return parts[0].trim();
+  }
+  if (c.length > 45) return c.slice(0, 42) + '...';
+  return c || 'Relevant Provision';
+}
+
 const FIXED_ABSTENTION_MESSAGE =
   "I don't have a reliable, cited answer to this specific question in my current knowledge base.";
 
@@ -885,6 +956,8 @@ export async function executePrompt5Pipeline(
 ): Promise<AskQuestionResult> {
   const normJurisdiction = targetJurisdiction;
   const targetLanguage = input.language || 'English';
+  const language = targetLanguage;
+  const originalQuestion = input.question;
   const isHindi = targetLanguage.toLowerCase().includes('hindi') || /[\u0900-\u097F]/.test(input.question);
   const retrievalQuestion = input.englishRetrievalQuestion || input.question;
 
@@ -947,6 +1020,38 @@ export async function executePrompt5Pipeline(
   // If zero chunks remain, skip straight to step 8 (abstain)
   if (survivingChunks.length === 0) {
     console.log(`[executePrompt5Pipeline:${normJurisdiction}:Step 3] Zero chunks survived floor. Skipping to Step 8 (abstain).`);
+    lastRetrievalDiagnostic = {
+      timestamp: new Date().toISOString(),
+      query: originalQuestion,
+      retrievalQuery,
+      jurisdiction: normJurisdiction,
+      language,
+      topScore,
+      similarityFloor: SIMILARITY_FLOOR,
+      survivingCount: 0,
+      totalCandidateCount: topCandidates.length,
+      confidence: 'low',
+      shouldEscalate: true,
+      topChunks: topCandidates.slice(0, 5).map((c, idx) => ({
+        rank: idx + 1,
+        id: c.id,
+        documentId: c.document_id,
+        documentTitle: c.documentTitle,
+        authority: c.authority,
+        jurisdiction: c.jurisdiction,
+        category: c.category || 'regulatory',
+        sectionLabel: cleanSectionLabel(c.sectionLabel),
+        similarity: c.similarity,
+        survivedFloor: false,
+        similarityFloor: SIMILARITY_FLOOR,
+        textSnippet: (() => {
+          const cleaned = cleanSanskritDiacritics(c.text);
+          return cleaned.length > 250 ? cleaned.slice(0, 247) + '...' : cleaned;
+        })(),
+        fullText: cleanSanskritDiacritics(c.text),
+      })),
+    };
+
     return {
       answer: fixedAbstentionMessage,
       citations: [],
@@ -954,6 +1059,37 @@ export async function executePrompt5Pipeline(
       shouldEscalate: true,
     };
   }
+
+  // Populate last retrieval diagnostic record
+  lastRetrievalDiagnostic = {
+    timestamp: new Date().toISOString(),
+    query: originalQuestion,
+    retrievalQuery,
+    jurisdiction: normJurisdiction,
+    language,
+    topScore,
+    similarityFloor: SIMILARITY_FLOOR,
+    survivingCount: survivingChunks.length,
+    totalCandidateCount: topCandidates.length,
+    topChunks: topCandidates.slice(0, 5).map((c, idx) => ({
+      rank: idx + 1,
+      id: c.id,
+      documentId: c.document_id,
+      documentTitle: c.documentTitle,
+      authority: c.authority,
+      jurisdiction: c.jurisdiction,
+      category: c.category || 'regulatory',
+      sectionLabel: cleanSectionLabel(c.sectionLabel),
+      similarity: c.similarity,
+      survivedFloor: c.similarity >= SIMILARITY_FLOOR || survivingChunks.some((sc) => sc.id === c.id),
+      similarityFloor: SIMILARITY_FLOOR,
+      textSnippet: (() => {
+        const cleaned = cleanSanskritDiacritics(c.text);
+        return cleaned.length > 250 ? cleaned.slice(0, 247) + '...' : cleaned;
+      })(),
+      fullText: cleanSanskritDiacritics(c.text),
+    })),
+  };
 
   // -------------------------------------------------------------
   // Step 4: Build numbered context block:
@@ -1068,40 +1204,6 @@ ${input.question}`;
     if (orText) return orText;
 
     return '';
-  }
-
-  // Clean diacritics and OCR artifacts from raw PDF text
-  function cleanSanskritDiacritics(txt: string): string {
-    return txt
-      .replace(/\b([a-zA-Z])\s+([āīūṛḷēōĀĪŪṚḶĒŌ])\s+([a-zA-Z])\b/g, '$1$2$3')
-      .replace(/([a-zA-ZāīūṛḷēōĀĪŪṚḶĒŌ])\s+([āīūṛḷēō])/g, '$1$2')
-      .replace(/([āīūṛḷēō])\s+([a-zA-Zāīūṛḷēō])/g, '$1$2')
-      .replace(/Kalpan\s*ā\s*Paribh\s*ā\s*¾\s*ā/gi, 'Kalpana Paribhasha')
-      .replace(/Ś\s*ā\s*r\s*¬\s*g\s*a\s*d\s*h\s*a\s*r\s*a/gi, 'Sharangadhara')
-      .replace(/Caraka\s*sa\s*¼\s*hit\s*ā/gi, 'Charaka Samhita')
-      .replace(/p\s*ā\s*k\s*a/gi, 'paka')
-      .replace(/lak\s*¾\s*a\s*´\s*a/gi, 'lakshana')
-      .replace(/C\s*ū\s*r\s*´\s*a/gi, 'Churna')
-      .replace(/¾/g, 'sh')
-      .replace(/¼/g, 'm')
-      .replace(/´/g, 'n')
-      .replace(/¬/g, 'ng')
-      .replace(/±/g, 'D')
-      .replace(/°/g, 't')
-      .replace(/[ \t]+/g, ' ')
-      .trim();
-  }
-
-  function cleanSectionLabel(lbl?: string | null): string {
-    if (!lbl) return 'Relevant Provision';
-    let c = lbl.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
-    c = c.replace(/^[#\-\*\s]+/, '');
-    if (c.includes(':')) {
-      const parts = c.split(':');
-      if (parts[0].trim().length >= 3 && parts[0].trim().length <= 45) return parts[0].trim();
-    }
-    if (c.length > 45) return c.slice(0, 42) + '...';
-    return c || 'Relevant Provision';
   }
 
   let generatedText = '';
@@ -1328,6 +1430,11 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
     primaryCategory,
     confidence,
   });
+
+  if (lastRetrievalDiagnostic && lastRetrievalDiagnostic.query === originalQuestion) {
+    lastRetrievalDiagnostic.confidence = confidence;
+    lastRetrievalDiagnostic.shouldEscalate = confidence === 'low';
+  }
 
   // -------------------------------------------------------------
   // Step 8: If zero citations survived or model explicitly gave an abstention, return fixed message
@@ -1596,3 +1703,76 @@ export function findCitedSentenceInChunk(
 
   return bestSentence;
 }
+
+/**
+ * Executes a simulated diagnostic retrieval for any query,
+ * returning the top candidate chunks, similarity scores, and floor status.
+ */
+export async function runDiagnosticQuery(params: {
+  question: string;
+  jurisdiction?: 'india' | 'international' | string;
+  language?: string;
+}): Promise<RetrievalDiagnosticInfo> {
+  const normJurisdiction = (params.jurisdiction?.toLowerCase().includes('inter')
+    ? 'international'
+    : 'india') as 'india' | 'international';
+  const language = params.language || 'English';
+  const isHindi = language.toLowerCase() === 'hindi';
+
+  let queryForRetrieval = params.question.trim();
+  if (isHindi && /[\u0900-\u097F]/.test(queryForRetrieval)) {
+    queryForRetrieval = await translateHindiToEnglish(queryForRetrieval);
+  }
+
+  const retrievalQuery = `${queryForRetrieval} — jurisdiction: ${normJurisdiction}`;
+  const queryVector = await getChunkEmbedding(retrievalQuery);
+  const topCandidates = await searchCandidateChunks(queryVector, normJurisdiction, retrievalQuery);
+
+  const topScore = topCandidates.length > 0 ? topCandidates[0].similarity : 0;
+  const isDenseEmbedding = topScore >= 0.40;
+  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.42 : 0.04;
+  let survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
+
+  if (survivingChunks.length === 0 && topCandidates.length > 0) {
+    survivingChunks = topCandidates.slice(0, 4);
+  } else {
+    survivingChunks = survivingChunks.slice(0, 8);
+  }
+
+  const diagnosticChunks: DiagnosticChunkItem[] = topCandidates.slice(0, 5).map((c, idx) => ({
+    rank: idx + 1,
+    id: c.id,
+    documentId: c.document_id,
+    documentTitle: c.documentTitle,
+    authority: c.authority,
+    jurisdiction: c.jurisdiction,
+    category: c.category || 'regulatory',
+    sectionLabel: cleanSectionLabel(c.sectionLabel),
+    similarity: c.similarity,
+    survivedFloor: c.similarity >= SIMILARITY_FLOOR || survivingChunks.some((sc) => sc.id === c.id),
+    similarityFloor: SIMILARITY_FLOOR,
+    textSnippet: (() => {
+      const cleaned = cleanSanskritDiacritics(c.text);
+      return cleaned.length > 280 ? cleaned.slice(0, 277) + '...' : cleaned;
+    })(),
+    fullText: cleanSanskritDiacritics(c.text),
+  }));
+
+  const info: RetrievalDiagnosticInfo = {
+    timestamp: new Date().toISOString(),
+    query: params.question.trim(),
+    retrievalQuery,
+    jurisdiction: normJurisdiction,
+    language,
+    topScore,
+    similarityFloor: SIMILARITY_FLOOR,
+    survivingCount: survivingChunks.length,
+    totalCandidateCount: topCandidates.length,
+    confidence: topScore >= 0.6 ? 'high' : topScore >= 0.42 ? 'medium' : 'low',
+    shouldEscalate: topScore < 0.42,
+    topChunks: diagnosticChunks,
+  };
+
+  return info;
+}
+

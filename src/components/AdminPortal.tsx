@@ -35,10 +35,137 @@ import {
   EyeOff,
   LogOut,
   Lock,
+  Activity,
+  Play,
+  HelpCircle,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  CheckSquare,
+  BarChart2,
+  SlidersHorizontal,
+  Award,
 } from 'lucide-react';
+import { AdminDiagnosticView } from './AdminDiagnosticView';
+import { AdminBenchmarksView } from './AdminBenchmarksView';
 
 // Configure the pdf.js worker (bundled by Vite as a static asset URL)
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+export interface DiagnosticChunkItem {
+  rank: number;
+  id: string;
+  documentId: string;
+  documentTitle: string;
+  authority: string | null;
+  jurisdiction: string;
+  category: string;
+  sectionLabel: string;
+  similarity: number;
+  survivedFloor: boolean;
+  similarityFloor: number;
+  textSnippet: string;
+  fullText: string;
+}
+
+export interface RetrievalDiagnosticInfo {
+  timestamp: string;
+  query: string;
+  retrievalQuery: string;
+  jurisdiction: string;
+  language: string;
+  topScore: number;
+  similarityFloor: number;
+  survivingCount: number;
+  totalCandidateCount: number;
+  confidence?: 'high' | 'medium' | 'low';
+  shouldEscalate?: boolean;
+  topChunks: DiagnosticChunkItem[];
+}
+
+export interface BenchmarkTestQuestion {
+  id: string;
+  category: string;
+  formulation: string;
+  question: string;
+  expectedAnswerSummary: string;
+  statutoryReference: string;
+  recommendedJurisdiction: 'india' | 'international';
+  diagnosticExplanation: string;
+}
+
+export const AYURVEDIC_TEST_SUITE: BenchmarkTestQuestion[] = [
+  {
+    id: 'api-paka-stages',
+    category: 'Sneha Kalpana',
+    formulation: 'Ghrita & Taila Formulations',
+    question: 'What are the characteristic testing stages of Paka Lakshana in Sneha Kalpana (Mridu, Madhyama, and Khara Paka)?',
+    expectedAnswerSummary: 'According to Kalpana Paribhasha and Sharangadhara Samhita cited in API Part-II Vol-II, Sneha Paka has three distinct stages: (1) Mridu Paka (mild cooking) where the Kalka (paste) is soft and waxy, used for Nasya (nasal therapy); (2) Madhyama Paka (intermediate cooking) where Kalka rolled between fingers forms a wick (Varti) without sticking and does not produce a crackling sound when put on fire, used for Pana (internal consumption) and Basti (enema); and (3) Khara Paka (hard cooking) where Kalka is slightly harder and gritty, used for Abhyanga (external massage).',
+    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, Section 4: General Methods (Sneha Kalpana / Paka Lakshana)',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Validates whether the retriever extracts specific Sanskrit/classical terms (Varti, Kalka, Nasya, Pana, Abhyanga) and distinguishes between the three therapeutic cooking stages without confusion.',
+  },
+  {
+    id: 'api-avaleha-standards',
+    category: 'Avaleha Kalpana',
+    formulation: 'Semisolid Electuary Formulations',
+    question: 'What pharmacopoeial characteristics and tests define a properly prepared Avaleha formulation?',
+    expectedAnswerSummary: 'In API Part-II Vol-II, Avaleha (confection/electuary) must satisfy specific organoleptic and physical tests: (1) Tantumatva (formation of a distinct thread when pressed between thumb and index finger); (2) Apsu Majjana (sinks in water without dispersing rapidly); (3) Pidite Mudra (preserves finger impression when pressed); and (4) Gandha-Varna-Rasa Utpatti (attainment of characteristic aroma, color, and taste of specified ingredients without caramelization or charring).',
+    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, General Notice: Avaleha Testing Guidelines',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Tests retrieval of physicochemical parameters and classical shelf-life/consistency tests for semisolid Ayurvedic preparations.',
+  },
+  {
+    id: 'api-bhasma-pariksha',
+    category: 'Bhasma Kalpana',
+    formulation: 'Herbo-Mineral / Metallic Calcinations',
+    question: 'What are the classical testing parameters for verifying the completion of Bhasma preparation (Varitaratva, Rekhapurnatva, Apunarbhava)?',
+    expectedAnswerSummary: 'API Part-II standards specify that genuine Bhasma must pass classical physical tests: (1) Varitaratva (particles float gently on stagnant water surface); (2) Rekhapurnatva (particles are so micro-fine that they enter the furrows of fingers when rubbed); (3) Apunarbhava (when heated with Mitra Panchaka / flux, it does not revert to metallic state); and (4) Niruttha (when heated with a silver leaf, it does not alloy or tarnish the silver).',
+    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, General Methods of Bhasma Pariksha',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Ensures the system retrieves authentic nano-particulate testing standards for metallic and mineral Ayurvedic compounds.',
+  },
+  {
+    id: 'api-shelf-life-rule161b',
+    category: 'Regulatory Standards',
+    formulation: 'Classical Ayurvedic Formulations',
+    question: 'What is the statutory shelf life and expiry period for Ayurvedic Churna, Vati, and Asava-Arishta under the Drugs and Cosmetics Rules?',
+    expectedAnswerSummary: 'Under Rule 161B of the Drugs and Cosmetics Rules 1945 (as amended): Churna (herbal powder) typically carries a shelf life of 2 years in hermetic containers; Vati / Gutika (tablets and pills) carry 3 years (up to 5 years for mineral/bhasma containing); Asava and Arishta (self-generated fermented liquids) have no expiry limit or a prolonged 10-year period because quality improves with natural maturation; and Sneha (Ghrita and Taila) carry a 2 to 3-year statutory shelf life.',
+    statutoryReference: 'Drugs and Cosmetics Rules 1945, Rule 161B (Expiry Period of Ayurvedic Medicines) & API Monograph Shelf-Life Notices',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Tests the retrieval of statutory expiry standards differentiating fermented formulations (Asava/Arishta) from raw herb powders (Churna).',
+  },
+  {
+    id: 'ip-section3p-patent',
+    category: 'Patent Law & TKDL',
+    formulation: 'Traditional Knowledge Defense',
+    question: 'How does Section 3(p) of the Indian Patents Act bar patentability for Ayurvedic herbal formulations, and what overcomes the objection?',
+    expectedAnswerSummary: 'Section 3(p) of the Indian Patents Act 1970 explicitly states that an invention which in effect is traditional knowledge or an aggregation or duplication of known properties of traditionally known components is not patentable. To overcome a Section 3(p) objection, an applicant must demonstrate a non-obvious synergistic technical effect (supported by comparative experimental pharmacology) showing that the combination yields unexpected efficacy exceeding the mere additive sum of the individual herbs documented in texts like Charaka Samhita or API.',
+    statutoryReference: 'Indian Patents Act 1970, Section 3(p) & Indian Patent Office AYUSH Guidelines (2018)',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Tests legal grounding under Indian IP law, specifically how traditional knowledge from the TKDL repository prevents biopiracy and frivolous evergreen patents.',
+  },
+  {
+    id: 'regulatory-rule158b-license',
+    category: 'Manufacturing Licensing',
+    formulation: 'Classical vs. Patent/Proprietary Ayurvedic Medicines',
+    question: 'What safety and efficacy proof is mandated under Rule 158B of the Drugs and Cosmetics Rules for obtaining an Ayurvedic manufacturing license?',
+    expectedAnswerSummary: 'Under Rule 158B of the Drugs and Cosmetics Rules 1945: For Classical (Shastric) Ayurvedic medicines manufactured strictly in accordance with authoritative texts in the First Schedule, no clinical trial data is required—only proof of classical textual reference in recognized pharmacopoeias. For Patent or Proprietary (P&P) Ayurvedic formulations containing new combinations or extract ratios, the applicant must submit acute toxicity data (LD50), published scientific literature on safety, and evidence of therapeutic efficacy or pilot clinical study results to the State Licensing Authority.',
+    statutoryReference: 'Drugs and Cosmetics Rules 1945, Rule 158B (Proof of Effectiveness for Ayurvedic, Siddha, and Unani Medicines)',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Validates distinction between classical Ayurvedic monographs (where textual authority suffices) and modern proprietary Ayurvedic products.',
+  },
+  {
+    id: 'abs-section6-nba',
+    category: 'Biological Diversity Act',
+    formulation: 'Indian Biological Resources Export & IP',
+    question: 'When is prior approval from the National Biodiversity Authority (NBA) required before applying for an intellectual property right based on Indian herbs?',
+    expectedAnswerSummary: 'Under Section 6 of the Biological Diversity Act 2002, no person can apply for any intellectual property right, in or outside India, for any invention based on any research or information on a biological resource obtained from India without obtaining prior approval from the National Biodiversity Authority (NBA). For Indian citizens, approval may be obtained before grant; for non-citizens/foreign entities (Section 3), prior NBA approval is mandatory before even obtaining or researching the biological resource.',
+    statutoryReference: 'Biological Diversity Act 2002, Section 6(1) & NBA Guidelines on Access and Benefit Sharing (ABS)',
+    recommendedJurisdiction: 'india',
+    diagnosticExplanation: 'Validates strict compliance requirements for biodiversity clearance prior to patent grant for herbal and natural product innovations.',
+  }
+];
 
 interface MetadataSuggestion {
   jurisdiction: 'india' | 'international';
@@ -240,6 +367,95 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
+  // Navigation Tabs for Admin Portal
+  const [activeAdminTab, setActiveAdminTab] = useState<'corpus' | 'diagnostic' | 'benchmarks'>('corpus');
+
+  // Diagnostic State for Last User Query and Live Test Runner
+  const [lastDiagnostic, setLastDiagnostic] = useState<RetrievalDiagnosticInfo | null>(null);
+  const [isLoadingDiagnostic, setIsLoadingDiagnostic] = useState<boolean>(false);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+
+  // Live Query Tester State
+  const [testQueryInput, setTestQueryInput] = useState<string>(
+    'What are the characteristic testing stages of Paka Lakshana in Sneha Kalpana (Mridu, Madhyama, and Khara Paka)?'
+  );
+  const [testQueryJurisdiction, setTestQueryJurisdiction] = useState<'india' | 'international'>('india');
+  const [testQueryLanguage, setTestQueryLanguage] = useState<string>('English');
+  const [isTestingQuery, setIsTestingQuery] = useState<boolean>(false);
+  const [testQueryResult, setTestQueryResult] = useState<RetrievalDiagnosticInfo | null>(null);
+  const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
+
+  const toggleChunkExpanded = (id: string) => {
+    setExpandedChunkIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Fetch last query diagnostic from server
+  const fetchLastDiagnostic = async () => {
+    setIsLoadingDiagnostic(true);
+    setDiagnosticError(null);
+    try {
+      const res = await fetch('/api/admin/diagnostic/last-retrieval', {
+        headers: { ...getAuthHeaders() },
+      });
+      if (res.status === 401) {
+        handleAuthFailure();
+        return;
+      }
+      const data = await res.json();
+      if (data.success) {
+        setLastDiagnostic(data.diagnostic);
+      } else {
+        setDiagnosticError(data.error || 'No prior query diagnostic found.');
+      }
+    } catch (err: any) {
+      setDiagnosticError(err.message || 'Failed to load diagnostic telemetry.');
+    } finally {
+      setIsLoadingDiagnostic(false);
+    }
+  };
+
+  // Run interactive diagnostic test query
+  const handleRunTestQuery = async (customQuery?: string, customJurisdiction?: 'india' | 'international') => {
+    const q = (customQuery !== undefined ? customQuery : testQueryInput).trim();
+    const jur = customJurisdiction || testQueryJurisdiction;
+    if (!q) return;
+
+    setIsTestingQuery(true);
+    setDiagnosticError(null);
+    try {
+      const res = await fetch('/api/admin/diagnostic/test-query', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
+        body: JSON.stringify({
+          question: q,
+          jurisdiction: jur,
+          language: testQueryLanguage,
+        }),
+      });
+      if (res.status === 401) {
+        handleAuthFailure();
+        return;
+      }
+      const data = await res.json();
+      if (data.success && data.diagnostic) {
+        setTestQueryResult(data.diagnostic);
+        setTestQueryInput(q);
+        if (customJurisdiction) {
+          setTestQueryJurisdiction(customJurisdiction);
+        }
+      } else {
+        setDiagnosticError(data.error || 'Diagnostic query run failed.');
+      }
+    } catch (err: any) {
+      setDiagnosticError(err.message || 'Network error running diagnostic query.');
+    } finally {
+      setIsTestingQuery(false);
+    }
+  };
+
   // Fetch all rows from the "documents" table
   const fetchDocuments = async () => {
     setIsLoadingDocs(true);
@@ -352,6 +568,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     if (isAuthenticated) {
       fetchStats();
       fetchDocuments();
+      fetchLastDiagnostic();
     }
   }, [isAuthenticated]);
 
@@ -1006,8 +1223,80 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
         </div>
       </header>
 
+      {/* Navigation Subheader Tabs */}
+      <div className="bg-[#082C25] border-t border-teal-800/60 px-6 py-2.5 shadow-inner">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          <nav className="flex items-center space-x-2">
+            <button
+              id="admin-tab-corpus"
+              type="button"
+              onClick={() => setActiveAdminTab('corpus')}
+              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeAdminTab === 'corpus'
+                  ? 'bg-white text-teal-950 shadow-xs'
+                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Corpus & Ingestion</span>
+              <span
+                className={`px-1.5 py-0.5 text-[10px] rounded-full font-bold ${
+                  activeAdminTab === 'corpus' ? 'bg-teal-100 text-teal-900' : 'bg-teal-950 text-teal-300'
+                }`}
+              >
+                {documents.length || stats.totalDocuments}
+              </span>
+            </button>
+
+            <button
+              id="admin-tab-diagnostic"
+              type="button"
+              onClick={() => setActiveAdminTab('diagnostic')}
+              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeAdminTab === 'diagnostic'
+                  ? 'bg-white text-teal-950 shadow-xs'
+                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>Retrieval Diagnostics & Chunk Inspector</span>
+              {lastDiagnostic && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+            </button>
+
+            <button
+              id="admin-tab-benchmarks"
+              type="button"
+              onClick={() => setActiveAdminTab('benchmarks')}
+              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeAdminTab === 'benchmarks'
+                  ? 'bg-white text-teal-950 shadow-xs'
+                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
+              }`}
+            >
+              <Award className="w-3.5 h-3.5" />
+              <span>AYUSH Ground Truth Benchmarks</span>
+              <span
+                className={`px-1.5 py-0.5 text-[10px] rounded-full font-bold ${
+                  activeAdminTab === 'benchmarks' ? 'bg-amber-100 text-amber-900' : 'bg-amber-950 text-amber-300'
+                }`}
+              >
+                {AYURVEDIC_TEST_SUITE.length}
+              </span>
+            </button>
+          </nav>
+
+          <div className="text-xs text-teal-300/80 font-mono hidden md:block">
+            RAG Pipeline Status: <strong className="text-emerald-300 font-sans">Active & Grounded</strong>
+          </div>
+        </div>
+      </div>
+
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto w-full p-6 space-y-6 flex-1">
+        {activeAdminTab === 'corpus' && (
+          <>
         {/* Running Summary Dashboard */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center space-x-3">
@@ -1879,6 +2168,37 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
             </div>
           </div>
         </section>
+        </>
+        )}
+
+        {activeAdminTab === 'diagnostic' && (
+          <AdminDiagnosticView
+            lastDiagnostic={lastDiagnostic}
+            isLoadingDiagnostic={isLoadingDiagnostic}
+            diagnosticError={diagnosticError}
+            onRefreshDiagnostic={fetchLastDiagnostic}
+            testQueryInput={testQueryInput}
+            onTestQueryInputChange={setTestQueryInput}
+            testQueryJurisdiction={testQueryJurisdiction}
+            onTestQueryJurisdictionChange={setTestQueryJurisdiction}
+            testQueryLanguage={testQueryLanguage}
+            onTestQueryLanguageChange={setTestQueryLanguage}
+            isTestingQuery={isTestingQuery}
+            testQueryResult={testQueryResult}
+            onRunTestQuery={handleRunTestQuery}
+            onSwitchToBenchmarks={() => setActiveAdminTab('benchmarks')}
+          />
+        )}
+
+        {activeAdminTab === 'benchmarks' && (
+          <AdminBenchmarksView
+            onRunTestQuestion={(q, jur) => {
+              setActiveAdminTab('diagnostic');
+              handleRunTestQuery(q, jur);
+            }}
+            onSwitchToDiagnostic={() => setActiveAdminTab('diagnostic')}
+          />
+        )}
       </main>
     </div>
   );
