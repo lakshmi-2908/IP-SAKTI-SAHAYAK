@@ -9,18 +9,13 @@ CREATE TABLE IF NOT EXISTS documents (
   title text NOT NULL,
   authority text,
   jurisdiction text NOT NULL CHECK (jurisdiction IN ('india', 'international')),
-  category text,
+  category text CHECK (category IN ('patent', 'trademark', 'GI', 'ABS', 'regulatory', 'TKDL')),
   language text,
   source_url text,
   upload_date timestamp DEFAULT now(),
   status text DEFAULT 'active' CHECK (status IN ('active', 'deactivated')),
   version int DEFAULT 1
 );
-
--- Ensure no restrictive check constraints prevent flexible document categories
-ALTER TABLE IF EXISTS documents DROP CONSTRAINT IF EXISTS documents_category_check;
-ALTER TABLE IF EXISTS documents ALTER COLUMN authority DROP NOT NULL;
-ALTER TABLE IF EXISTS chunks DROP CONSTRAINT IF EXISTS chunks_category_check;
 
 -- 2. chunks table
 -- Chosen embedding dimension: 768 (strictly matching Prompt 4 ingestion & Prompt 5 search)
@@ -103,9 +98,7 @@ BEGIN
     chunks.language,
     (1 - (chunks.embedding <=> query_embedding))::float AS similarity
   FROM chunks
-  JOIN documents d ON d.id = chunks.document_id
-  WHERE d.status = 'active'
-    AND (filter_jurisdiction IS NULL OR chunks.jurisdiction = filter_jurisdiction)
+  WHERE (filter_jurisdiction IS NULL OR chunks.jurisdiction = filter_jurisdiction)
     AND (filter_category IS NULL OR chunks.category = filter_category)
     AND (chunks.embedding IS NOT NULL)
     AND (1 - (chunks.embedding <=> query_embedding) > match_threshold)
@@ -113,13 +106,3 @@ BEGIN
   LIMIT match_count;
 END;
 $$;
-
--- Permissions for Supabase API access (service_role, anon, authenticated)
-GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-
--- Notify PostgREST to immediately refresh its schema cache
-NOTIFY pgrst, 'reload schema';
-

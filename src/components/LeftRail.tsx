@@ -10,7 +10,6 @@ import {
   ShieldCheck,
   Building2,
   ExternalLink,
-  ShieldAlert,
 } from 'lucide-react';
 import { Jurisdiction, Language } from '../types';
 
@@ -18,7 +17,6 @@ interface LeftRailProps {
   onResetConversation: () => void;
   onSelectPrompt: (promptText: string) => void;
   onOpenClassifyProduct?: () => void;
-  onOpenAdmin?: () => void;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
   jurisdiction: Jurisdiction;
@@ -29,25 +27,11 @@ export const LeftRail: React.FC<LeftRailProps> = ({
   onResetConversation,
   onSelectPrompt,
   onOpenClassifyProduct,
-  onOpenAdmin,
   isOpenMobile,
   onCloseMobile,
   jurisdiction,
   language,
 }) => {
-  // Check if admin session is actively authenticated in sessionStorage (strictly session-bound)
-  const isStoredAdmin = (() => {
-    try {
-      return (
-        sessionStorage.getItem('ipsakti_admin_authenticated') === 'true' &&
-        (!!sessionStorage.getItem('ipsakti_admin_session_token') ||
-          !!sessionStorage.getItem('ipsakti_admin_passcode'))
-      );
-    } catch {
-      return false;
-    }
-  })();
-
   const quickPrompts = [
     {
       id: 'quick-prompt-patent',
@@ -57,11 +41,11 @@ export const LeftRail: React.FC<LeftRailProps> = ({
       promptText: 'Can I patent my formulation?',
     },
     {
-      id: 'quick-prompt-standards',
-      title: language === 'Hindi' ? 'आयुर्वेदिक फार्माकोपिया मानक' : 'Pharmacopoeia & Monograph Standards',
-      subtitle: jurisdiction === 'India' ? 'API Vol II Monographs, Asava & Arishta Criteria' : 'Botanical Quality Monograph Standards',
+      id: 'quick-prompt-licence',
+      title: language === 'Hindi' ? 'मुझे किस लाइसेंस की आवश्यकता है?' : 'What licence do I need?',
+      subtitle: jurisdiction === 'India' ? 'Ayush Rule 158B, Classical vs Proprietary' : 'Export, GMP & International Clearance',
       icon: FileBadge,
-      promptText: 'What are the pharmacopoeial standards and monograph requirements for formulations in the Ayurvedic Pharmacopoeia of India (API)?',
+      promptText: 'What licence do I need?',
     },
     {
       id: 'quick-prompt-raw-material',
@@ -202,35 +186,6 @@ export const LeftRail: React.FC<LeftRailProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Admin Portal Quick Access */}
-      {onOpenAdmin && (
-        <div className="p-2.5 bg-emerald-950/5 border-t border-slate-200">
-          <button
-            id="left-rail-admin-btn"
-            onClick={onOpenAdmin}
-            className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg bg-teal-900 text-white hover:bg-teal-800 transition-colors text-xs font-medium cursor-pointer shadow-xs"
-            title={
-              isStoredAdmin
-                ? 'Open Administrative Ingestion Portal (Session Active — Alt+A)'
-                : 'Open Administrative Ingestion Portal (Alt+A)'
-            }
-          >
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <ShieldAlert className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
-                {isStoredAdmin && (
-                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                )}
-              </div>
-              <span>{isStoredAdmin ? 'Admin Portal (Signed In)' : 'Admin Ingestion Portal'}</span>
-            </div>
-            <span className="text-[10px] font-mono text-emerald-300/80 bg-teal-950/80 px-1.5 py-0.5 rounded">
-              Alt+A
-            </span>
-          </button>
-        </div>
-      )}
 
       {/* Bottom Legal Anchor */}
       <div className="p-3 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-500 flex items-center justify-between">

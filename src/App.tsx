@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { TopBar } from './components/TopBar';
 import { LeftRail } from './components/LeftRail';
 import { ChatThread } from './components/ChatThread';
@@ -11,6 +11,7 @@ import { RightRail } from './components/RightRail';
 import { LegalDisclaimerModal } from './components/LegalDisclaimerModal';
 import { OnboardingModal } from './components/OnboardingModal';
 import { DatabaseStatusModal } from './components/DatabaseStatusModal';
+import { AdminPortal } from './components/AdminPortal';
 import { EscalationModal } from './components/EscalationModal';
 import { SourceViewerModal } from './components/SourceViewerModal';
 import { ProductClassificationModal } from './components/ProductClassificationModal';
@@ -22,13 +23,6 @@ import {
   ClassifyProductFormData,
   SourceCitation,
 } from './types';
-
-// Lazy-loaded: AdminPortal pulls in pdfjs-dist and mammoth for document
-// ingestion, which are only needed by admins, not the general chat audience.
-// Code-splitting this keeps the main chat bundle lean.
-const AdminPortal = lazy(() =>
-  import('./components/AdminPortal').then((m) => ({ default: m.AdminPortal }))
-);
 
 /**
  * Extracts the first sentence or two from an assistant answer text
@@ -135,11 +129,7 @@ export default function App() {
   // Listen for browser navigation / history changes and keyboard shortcut (Alt+A)
   useEffect(() => {
     const handleLocationChange = () => {
-      if (
-        window.location.pathname.startsWith('/admin') ||
-        window.location.hash === '#/admin' ||
-        window.location.hash === '#admin'
-      ) {
+      if (window.location.pathname.startsWith('/admin') || window.location.hash === '#/admin') {
         setCurrentPath('/admin');
       } else {
         setCurrentPath('/');
@@ -150,12 +140,7 @@ export default function App() {
       if ((e.altKey && e.key === 'a') || (e.ctrlKey && e.shiftKey && e.key === 'A')) {
         e.preventDefault();
         const next = currentPath === '/admin' ? '/' : '/admin';
-        try {
-          window.history.pushState(null, '', next);
-        } catch {
-          // ignore
-        }
-        window.location.hash = next === '/admin' ? '#/admin' : '';
+        window.history.pushState(null, '', next);
         setCurrentPath(next);
       }
     };
@@ -172,18 +157,14 @@ export default function App() {
   }, [currentPath]);
 
   const navigateTo = (path: string) => {
-    try {
-      window.history.pushState(null, '', path);
-    } catch {
-      // ignore
-    }
-    if (path === '/admin') {
-      window.location.hash = '#/admin';
-    } else if (window.location.hash.includes('admin')) {
-      window.location.hash = '';
-    }
+    window.history.pushState(null, '', path);
     setCurrentPath(path);
   };
+
+  // If on /admin route, render the passcode-gated Administrative Ingestion Portal
+  if (currentPath === '/admin') {
+    return <AdminPortal onNavigateHome={() => navigateTo('/')} />;
+  }
 
   // Conversation tracking & persistent identifier
   const [conversationId, setConversationId] = useState<string>(() => crypto.randomUUID());
@@ -215,9 +196,8 @@ export default function App() {
   // Loading indicator for active RAG query
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Initial welcome message factory (re-used on mount AND on conversation reset,
-  // with a freshly computed timestamp each time it's invoked)
-  const buildInitialMessages = (): ChatMessage[] => [
+  // Initial welcome message
+  const initialMessages: ChatMessage[] = [
     {
       id: 'welcome-init-msg',
       sender: 'assistant',
@@ -228,7 +208,7 @@ export default function App() {
     },
   ];
 
-  const [messages, setMessages] = useState<ChatMessage[]>(buildInitialMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
 
   // Empty state by default for Product Classification ("Not yet classified")
   const [classification, setClassification] = useState<ProductClassificationSummary>({
@@ -238,8 +218,7 @@ export default function App() {
   // Empty state by default for Sources ("No sources yet")
   const [sources, setSources] = useState<SourceCitation[]>([]);
 
-  // Initialize conversation row (only when the conversation identity itself changes,
-  // e.g. on mount or after a reset) — not on every jurisdiction/language chip toggle
+  // Initialize conversation row on mount
   useEffect(() => {
     fetch('/api/conversations', {
       method: 'POST',
@@ -250,28 +229,7 @@ export default function App() {
         language,
       }),
     }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
-
-  // Sync jurisdiction/language chip changes to the existing conversation row,
-  // separately from the initial registration above
-  const isFirstJurisdictionLanguageSync = useRef(true);
-  useEffect(() => {
-    if (isFirstJurisdictionLanguageSync.current) {
-      isFirstJurisdictionLanguageSync.current = false;
-      return;
-    }
-    fetch('/api/conversations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: conversationId,
-        jurisdiction: jurisdiction.toLowerCase(),
-        language,
-      }),
-    }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jurisdiction, language]);
+  }, [conversationId, jurisdiction, language]);
 
   // Toggles for chips
   const handleToggleJurisdiction = () => {
@@ -316,7 +274,7 @@ export default function App() {
     }).catch(() => {});
 
     setConversationId(newConvId);
-    setMessages(buildInitialMessages());
+    setMessages([]);
     setClassification({ isClassified: false });
     setSources([]);
     setPendingQuestionAfterClassification(null);
@@ -440,13 +398,11 @@ export default function App() {
         setSources((prev) => mergeSessionSources(prev, data.citations));
       }
 
-      // NOTE: We intentionally do NOT auto-open the Escalation modal here.
-      // With an empty/sparse knowledge base, virtually every query returns
-      // shouldEscalate: true, which previously popped the modal over the
-      // answer before the user could even read it. The inline "Attorney
-      // review flagged" badge on the message (see ChatThread) plus the
-      // manual "Talk to a facilitator" action (handleOpenEscalation) give
-      // the user control over when to escalate instead.
+      // Auto-open escalation modal if shouldEscalate is true
+      if (data.shouldEscalate) {
+        setEscalationQuestion(questionText);
+        setIsEscalationOpen(true);
+      }
     } catch (err: any) {
       console.error('[App] askQuestion error:', err);
       const assistantMsgId = crypto.randomUUID();
@@ -491,7 +447,6 @@ export default function App() {
     // check this with one small, cheap Gemini call before running askQuestion"
     if (!classification.isClassified) {
       setIsLoading(true);
-      let proceedingToAskQuestion = true;
       try {
         const intentRes = await fetch('/api/check-product-intent', {
           method: 'POST',
@@ -502,7 +457,6 @@ export default function App() {
 
         if (intentData?.intent === 'product') {
           // Pause and show the guided classification form before calling askQuestion
-          proceedingToAskQuestion = false;
           setIsLoading(false);
           setPendingQuestionAfterClassification(trimmedText);
           setInitialClassificationFormData(null);
@@ -512,12 +466,7 @@ export default function App() {
       } catch (intentErr) {
         console.warn('[App] Intent check error, proceeding to askQuestion:', intentErr);
       } finally {
-        // Only clear isLoading here if we're NOT about to immediately call
-        // runAskQuestion below, which sets isLoading(true) again right away.
-        // Otherwise this creates a brief true -> false -> true UI flicker.
-        if (!proceedingToAskQuestion) {
-          setIsLoading(false);
-        }
+        setIsLoading(false);
       }
     }
 
@@ -625,27 +574,6 @@ export default function App() {
     setIsOnboardingOpen(false);
   };
 
-  // If on /admin route or hash, render the AdminPortal after all hooks have executed unconditionally
-  if (currentPath === '/admin') {
-    return (
-      <Suspense
-        fallback={
-          <div className="h-screen w-screen flex items-center justify-center bg-[#F6F8F7] text-slate-500 text-sm">
-            Loading admin portal…
-          </div>
-        }
-      >
-        <AdminPortal
-          onNavigateHome={() => navigateTo('/')}
-          onSessionChange={() => {
-            // Trigger re-render to update TopBar and LeftRail admin badges
-            setCurrentPath('/admin');
-          }}
-        />
-      </Suspense>
-    );
-  }
-
   return (
     <div
       id="app-root-workspace"
@@ -659,7 +587,6 @@ export default function App() {
         onToggleLanguage={handleToggleLanguage}
         onOpenDisclaimer={() => setIsDisclaimerOpen(true)}
         onOpenDbStatus={() => setIsDbStatusOpen(true)}
-        onOpenAdmin={() => navigateTo('/admin')}
         onToggleMobileLeftRail={() => setIsMobileLeftRailOpen((prev) => !prev)}
         onToggleMobileRightRail={() => setIsMobileRightRailOpen((prev) => !prev)}
         isMobileRightRailOpen={isMobileRightRailOpen}
@@ -672,7 +599,6 @@ export default function App() {
           onResetConversation={handleResetConversation}
           onSelectPrompt={handleSelectPrompt}
           onOpenClassifyProduct={() => handleOpenClassification(false)}
-          onOpenAdmin={() => navigateTo('/admin')}
           isOpenMobile={isMobileLeftRailOpen}
           onCloseMobile={() => setIsMobileLeftRailOpen(false)}
           jurisdiction={jurisdiction}

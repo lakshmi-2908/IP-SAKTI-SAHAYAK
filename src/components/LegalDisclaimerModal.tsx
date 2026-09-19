@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { ShieldAlert, X, Scale, AlertCircle } from 'lucide-react';
 
 interface LegalDisclaimerModalProps {
@@ -12,18 +12,6 @@ export const LegalDisclaimerModal: React.FC<LegalDisclaimerModalProps> = ({
   onClose,
   language,
 }) => {
-  // Close on Escape key
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
   return (

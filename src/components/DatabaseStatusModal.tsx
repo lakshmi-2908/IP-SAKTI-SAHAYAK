@@ -111,14 +111,6 @@ export const DatabaseStatusModal: React.FC<DatabaseStatusModalProps> = ({
                 configured in the PostgreSQL column schema (<code className="font-mono text-[10px] bg-emerald-100 px-1 py-0.2 rounded">chunks.embedding vector(768)</code>),
                 and is bound to all document chunk ingestion and user search embedding calls (<code className="font-mono text-[10px] bg-emerald-100 px-1 py-0.2 rounded">output_dimensionality: 768</code>).
               </p>
-              <div className="pt-2 border-t border-emerald-200/60 text-[11px] text-emerald-950 flex flex-wrap items-center gap-1.5 font-medium">
-                <span className="text-emerald-800 font-semibold">Resilient Pipeline:</span>
-                <span className="bg-emerald-100 px-1.5 py-0.5 rounded text-[10px] font-mono">Gemini Embeddings</span>
-                <span className="text-emerald-600">→ (on 429)</span>
-                <span className="bg-emerald-100 px-1.5 py-0.5 rounded text-[10px] font-mono">OpenRouter Nemotron 3 Embed 1B:free</span>
-                <span className="text-emerald-600">→</span>
-                <span className="bg-emerald-100 px-1.5 py-0.5 rounded text-[10px] font-mono">Deterministic 768-dim Fallback</span>
-              </div>
             </div>
           </div>
 

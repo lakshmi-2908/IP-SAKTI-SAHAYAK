@@ -1,5 +1,5 @@
 import { getGenAI, getChunkEmbedding, getLocalChunks, getLocalDocuments, EMBEDDING_MODEL, EMBEDDING_DIMENSION } from './ingestion';
-import { getPgPool, getSupabaseClient, isPostgresDirectAvailable, markPostgresDirectFailure } from './supabase';
+import { getPgPool, getSupabaseClient } from './supabase';
 
 export interface AskQuestionInput {
   question: string;
@@ -71,77 +71,6 @@ export interface CandidateChunk {
   authority: string | null;
   sourceUrl: string | null;
   similarity: number;
-}
-
-export interface DiagnosticChunkItem {
-  rank: number;
-  id: string;
-  documentId: string;
-  documentTitle: string;
-  authority: string | null;
-  jurisdiction: string;
-  category: string;
-  sectionLabel: string;
-  similarity: number;
-  survivedFloor: boolean;
-  similarityFloor: number;
-  textSnippet: string;
-  fullText: string;
-}
-
-export interface RetrievalDiagnosticInfo {
-  timestamp: string;
-  query: string;
-  retrievalQuery: string;
-  jurisdiction: string;
-  language: string;
-  topScore: number;
-  similarityFloor: number;
-  survivingCount: number;
-  totalCandidateCount: number;
-  confidence?: 'high' | 'medium' | 'low';
-  shouldEscalate?: boolean;
-  topChunks: DiagnosticChunkItem[];
-}
-
-let lastRetrievalDiagnostic: RetrievalDiagnosticInfo | null = null;
-
-export function getLastRetrievalDiagnostic(): RetrievalDiagnosticInfo | null {
-  return lastRetrievalDiagnostic;
-}
-
-// Clean diacritics and OCR artifacts from raw PDF text
-export function cleanSanskritDiacritics(txt: string): string {
-  return txt
-    .replace(/\b([a-zA-Z])\s+([āīūṛḷēōĀĪŪṚḶĒŌ])\s+([a-zA-Z])\b/g, '$1$2$3')
-    .replace(/([a-zA-ZāīūṛḷēōĀĪŪṚḶĒŌ])\s+([āīūṛḷēō])/g, '$1$2')
-    .replace(/([āīūṛḷēō])\s+([a-zA-Zāīūṛḷēō])/g, '$1$2')
-    .replace(/Kalpan\s*ā\s*Paribh\s*ā\s*¾\s*ā/gi, 'Kalpana Paribhasha')
-    .replace(/Ś\s*ā\s*r\s*¬\s*g\s*a\s*d\s*h\s*a\s*r\s*a/gi, 'Sharangadhara')
-    .replace(/Caraka\s*sa\s*¼\s*hit\s*ā/gi, 'Charaka Samhita')
-    .replace(/p\s*ā\s*k\s*a/gi, 'paka')
-    .replace(/lak\s*¾\s*a\s*´\s*a/gi, 'lakshana')
-    .replace(/C\s*ū\s*r\s*´\s*a/gi, 'Churna')
-    .replace(/¾/g, 'sh')
-    .replace(/¼/g, 'm')
-    .replace(/´/g, 'n')
-    .replace(/¬/g, 'ng')
-    .replace(/±/g, 'D')
-    .replace(/°/g, 't')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-}
-
-export function cleanSectionLabel(lbl?: string | null): string {
-  if (!lbl) return 'Relevant Provision';
-  let c = lbl.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  c = c.replace(/^[#\-\*\s]+/, '');
-  if (c.includes(':')) {
-    const parts = c.split(':');
-    if (parts[0].trim().length >= 3 && parts[0].trim().length <= 45) return parts[0].trim();
-  }
-  if (c.length > 45) return c.slice(0, 42) + '...';
-  return c || 'Relevant Provision';
 }
 
 const FIXED_ABSTENTION_MESSAGE =
@@ -432,281 +361,130 @@ function computeCosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 /**
- * Step 3: Run hybrid semantic and lexical search against the "chunks" table,
+ * Step 3: Run cosine-similarity search against the "chunks" table,
  * filtered to rows where chunks.jurisdiction exactly matches the given jurisdiction.
- * Retrieves candidate pool (up to 25) and applies Reciprocal Rank & Keyword Boosting
- * to ensure exact statutory provisions matching query concepts surface to the top.
+ * Retrieve up to top 8 candidates by similarity score, then apply floor of 0.55.
  */
 async function searchCandidateChunks(
   queryVector: number[],
-  jurisdiction: 'india' | 'international',
-  rawQueryText?: string
+  jurisdiction: 'india' | 'international'
 ): Promise<CandidateChunk[]> {
-  let candidatePool: CandidateChunk[] = [];
+  const pool = getPgPool();
 
-  // Try PostgreSQL direct connection if available
-  if (isPostgresDirectAvailable()) {
-    const pool = getPgPool();
-    if (pool) {
+  // Try PostgreSQL direct connection
+  if (pool) {
+    try {
+      const client = await pool.connect();
       try {
-        const client = await pool.connect();
-        try {
-          const query = `
-            SELECT 
-              c.id,
-              c.document_id,
-              c.text,
-              c.section_label,
-              c.jurisdiction,
-              c.category,
-              c.language,
-              d.title AS document_title,
-              d.authority,
-              d.source_url,
-              (1 - (c.embedding <=> $1::vector))::float AS similarity
-            FROM chunks c
-            JOIN documents d ON d.id = c.document_id
-            WHERE c.jurisdiction = $2
-              AND c.embedding IS NOT NULL
-              AND d.status = 'active'
-            ORDER BY c.embedding <=> $1::vector ASC
-            LIMIT 25;
-          `;
-          const vectorStr = `[${queryVector.join(',')}]`;
-          const res = await client.query(query, [vectorStr, jurisdiction]);
-          if (res.rows.length > 0) {
-            candidatePool = res.rows.map((r: any) => ({
-              id: r.id,
-              document_id: r.document_id,
-              text: r.text,
-              sectionLabel: r.section_label,
-              jurisdiction: r.jurisdiction,
-              category: r.category,
-              language: r.language,
-              documentTitle: r.document_title || 'Statutory Source',
-              authority: r.authority,
-              sourceUrl: r.source_url,
-              similarity: parseFloat(r.similarity) || 0,
-            }));
-          }
-        } finally {
-          client.release();
+        const query = `
+          SELECT 
+            c.id,
+            c.document_id,
+            c.text,
+            c.section_label,
+            c.jurisdiction,
+            c.category,
+            c.language,
+            d.title AS document_title,
+            d.authority,
+            d.source_url,
+            (1 - (c.embedding <=> $1::vector))::float AS similarity
+          FROM chunks c
+          JOIN documents d ON d.id = c.document_id
+          WHERE c.jurisdiction = $2
+            AND c.embedding IS NOT NULL
+            AND d.status = 'active'
+          ORDER BY c.embedding <=> $1::vector ASC
+          LIMIT 8;
+        `;
+        const vectorStr = `[${queryVector.join(',')}]`;
+        const res = await client.query(query, [vectorStr, jurisdiction]);
+        if (res.rows.length > 0) {
+          return res.rows.map((r: any) => ({
+            id: r.id,
+            document_id: r.document_id,
+            text: r.text,
+            sectionLabel: r.section_label,
+            jurisdiction: r.jurisdiction,
+            category: r.category,
+            language: r.language,
+            documentTitle: r.document_title || 'Statutory Source',
+            authority: r.authority,
+            sourceUrl: r.source_url,
+            similarity: parseFloat(r.similarity) || 0,
+          }));
         }
-      } catch (err: any) {
-        markPostgresDirectFailure(err);
-        console.warn('Postgres direct search failed, trying Supabase REST/In-memory:', err.message);
+      } finally {
+        client.release();
       }
+    } catch (err: any) {
+      console.warn('Postgres direct search failed, trying Supabase REST/In-memory:', err.message);
     }
   }
 
-  // Try Supabase client match_chunks RPC if Postgres direct returned nothing
-  if (candidatePool.length === 0) {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const { data: rpcChunks, error } = await supabase.rpc('match_chunks', {
-          query_embedding: queryVector,
-          match_threshold: 0.0,
-          match_count: 25,
-          filter_jurisdiction: jurisdiction,
+  // Try Supabase client match_chunks RPC
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data: rpcChunks, error } = await supabase.rpc('match_chunks', {
+        query_embedding: queryVector,
+        match_threshold: 0.0,
+        match_count: 8,
+        filter_jurisdiction: jurisdiction,
+      });
+
+      if (!error && rpcChunks && rpcChunks.length > 0) {
+        // Fetch parent documents
+        const docIds = Array.from(new Set(rpcChunks.map((c: any) => c.document_id)));
+        const { data: docs } = await supabase
+          .from('documents')
+          .select('id, title, authority, source_url')
+          .in('id', docIds);
+
+        const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
+
+        return rpcChunks.map((c: any) => {
+          const parentDoc = docMap.get(c.document_id);
+          return {
+            id: c.id,
+            document_id: c.document_id,
+            text: c.text,
+            sectionLabel: c.section_label,
+            jurisdiction: c.jurisdiction,
+            category: c.category,
+            language: c.language,
+            documentTitle: parentDoc?.title || 'Statutory Source',
+            authority: parentDoc?.authority || null,
+            sourceUrl: parentDoc?.source_url || null,
+            similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
+          };
         });
-
-        if (!error && rpcChunks && rpcChunks.length > 0) {
-          // Fetch parent documents
-          const docIds = Array.from(new Set(rpcChunks.map((c: any) => c.document_id)));
-          const { data: docs } = await supabase
-            .from('documents')
-            .select('id, title, authority, source_url')
-            .in('id', docIds);
-
-          const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
-
-          candidatePool = rpcChunks.map((c: any) => {
-            const parentDoc = docMap.get(c.document_id);
-            return {
-              id: c.id,
-              document_id: c.document_id,
-              text: c.text,
-              sectionLabel: c.section_label,
-              jurisdiction: c.jurisdiction,
-              category: c.category,
-              language: c.language,
-              documentTitle: parentDoc?.title || 'Statutory Source',
-              authority: parentDoc?.authority || null,
-              sourceUrl: parentDoc?.source_url || null,
-              similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
-            };
-          });
-        }
-
-        // If fewer than 4 chunks found for specific jurisdiction, search across all documents
-        if (candidatePool.length < 4) {
-          const { data: allRpcChunks } = await supabase.rpc('match_chunks', {
-            query_embedding: queryVector,
-            match_threshold: 0.0,
-            match_count: 25,
-            filter_jurisdiction: null,
-          });
-
-          if (allRpcChunks && allRpcChunks.length > 0) {
-            const docIds = Array.from(new Set(allRpcChunks.map((c: any) => c.document_id)));
-            const { data: docs } = await supabase
-              .from('documents')
-              .select('id, title, authority, source_url')
-              .in('id', docIds);
-
-            const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
-            const existingIds = new Set(candidatePool.map((c) => c.id));
-
-            for (const c of allRpcChunks) {
-              if (!existingIds.has(c.id)) {
-                const parentDoc = docMap.get(c.document_id);
-                candidatePool.push({
-                  id: c.id,
-                  document_id: c.document_id,
-                  text: c.text,
-                  sectionLabel: c.section_label,
-                  jurisdiction: c.jurisdiction,
-                  category: c.category,
-                  language: c.language,
-                  documentTitle: parentDoc?.title || 'Statutory Source',
-                  authority: parentDoc?.authority || null,
-                  sourceUrl: parentDoc?.source_url || null,
-                  similarity: typeof c.similarity === 'number' ? c.similarity : parseFloat(c.similarity) || 0,
-                });
-                existingIds.add(c.id);
-              }
-            }
-          }
-        }
-
-        if (candidatePool.length === 0 && error) {
-          console.warn('Supabase match_chunks RPC note:', error.message);
-          // Direct REST table query fallback if match_chunks RPC is not installed
-          const { data: dbChunks } = await supabase
-            .from('chunks')
-            .select('id, document_id, text, section_label, jurisdiction, category, language, embedding')
-            .limit(300);
-
-          if (dbChunks && dbChunks.length > 0) {
-            const docIds = Array.from(new Set(dbChunks.map((c: any) => c.document_id)));
-            const { data: docs } = await supabase
-              .from('documents')
-              .select('id, title, authority, source_url, status')
-              .in('id', docIds);
-
-            const docMap = new Map<string, any>((docs || []).map((d: any) => [d.id, d]));
-            const activeChunks = dbChunks.filter((c: any) => {
-              const doc = docMap.get(c.document_id);
-              return !doc || doc.status !== 'deactivated';
-            });
-
-            candidatePool = activeChunks.map((c: any) => {
-              const parentDoc = docMap.get(c.document_id);
-              let emb = c.embedding;
-              if (typeof emb === 'string') {
-                try {
-                  emb = JSON.parse(emb);
-                } catch {
-                  emb = [];
-                }
-              }
-              const sim = Array.isArray(emb) && emb.length > 0 ? computeCosineSimilarity(queryVector, emb) : 0;
-              return {
-                id: c.id,
-                document_id: c.document_id,
-                text: c.text,
-                sectionLabel: c.section_label,
-                jurisdiction: c.jurisdiction,
-                category: c.category,
-                language: c.language,
-                documentTitle: parentDoc?.title || 'Statutory Source',
-                authority: parentDoc?.authority || null,
-                sourceUrl: parentDoc?.source_url || null,
-                similarity: sim,
-              };
-            });
-          }
-        }
-      } catch (rpcErr: any) {
-        console.warn('Supabase match_chunks RPC failed:', rpcErr.message);
       }
+    } catch (rpcErr: any) {
+      console.warn('Supabase match_chunks RPC failed:', rpcErr.message);
     }
   }
 
-  // Fallback to active in-memory registry if both databases returned nothing
-  if (candidatePool.length === 0) {
-    const localDocs = getLocalDocuments();
-    const activeDocIds = new Set(localDocs.filter((d) => d.status === 'active').map((d) => d.id));
-    const docMap = new Map(localDocs.map((d) => [d.id, d]));
-    const localChunks = getLocalChunks().filter(
-      (c) => c.jurisdiction === jurisdiction && activeDocIds.has(c.document_id)
-    );
+  // Fallback to active in-memory registry
+  const localChunks = getLocalChunks().filter((c) => c.jurisdiction === jurisdiction);
+  const localDocs = getLocalDocuments();
+  const docMap = new Map(localDocs.map((d) => [d.id, d]));
 
-    candidatePool = localChunks.map((c) => {
-      const parentDoc = docMap.get(c.document_id);
-      const sim = computeCosineSimilarity(queryVector, c.embedding);
-      return {
-        id: c.id,
-        document_id: c.document_id,
-        text: c.text,
-        sectionLabel: c.section_label,
-        jurisdiction: c.jurisdiction,
-        category: c.category,
-        language: c.language,
-        documentTitle: parentDoc?.title || 'Statutory Source',
-        authority: parentDoc?.authority || null,
-        sourceUrl: parentDoc?.source_url || null,
-        similarity: sim,
-      };
-    });
-  }
-
-  // Hybrid Lexical-Semantic Reranking:
-  // Extract key topical query keywords (ignoring standard grammatical stop words)
-  const stopWords = new Set([
-    'what', 'is', 'the', 'difference', 'between', 'and', 'in', 'of', 'for',
-    'how', 'why', 'where', 'when', 'does', 'can', 'should', 'with', 'under',
-    'per', 'regarding', 'about', 'explain', 'give', 'list', 'define', 'to',
-    'a', 'an', 'are', 'was', 'were', 'tell', 'me', 'please', 'which', 'their',
-    'from', 'into', 'such', 'this', 'that', 'these', 'those'
-  ]);
-  const queryTokens = (rawQueryText || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !stopWords.has(w));
-
-  const scored = candidatePool.map((c) => {
-    let lexicalScore = 0;
-    if (queryTokens.length > 0) {
-      const corpus = (
-        c.text + ' ' +
-        (c.sectionLabel || '') + ' ' +
-        c.documentTitle + ' ' +
-        (c.category || '')
-      ).toLowerCase();
-
-      let matchedCount = 0;
-      for (const tok of queryTokens) {
-        if (corpus.includes(tok)) {
-          matchedCount++;
-        } else if (tok.length > 5 && corpus.includes(tok.slice(0, -2))) {
-          matchedCount += 0.7;
-        }
-      }
-      lexicalScore = Math.min(1.0, matchedCount / queryTokens.length);
-    }
-
-    // Hybrid calculation: semantic cosine similarity as the foundation, plus lexical keyword density bonus
-    // This ensures high-semantic matches are never penalized, while exact keyword matches get boosted
-    const hybridSim = queryTokens.length > 0
-      ? c.similarity + (lexicalScore * 0.25)
-      : c.similarity;
-
+  const scored = localChunks.map((c) => {
+    const parentDoc = docMap.get(c.document_id);
+    const sim = computeCosineSimilarity(queryVector, c.embedding);
     return {
-      ...c,
-      similarity: Number(hybridSim.toFixed(4)),
+      id: c.id,
+      document_id: c.document_id,
+      text: c.text,
+      sectionLabel: c.section_label,
+      jurisdiction: c.jurisdiction,
+      category: c.category,
+      language: c.language,
+      documentTitle: parentDoc?.title || 'Statutory Source',
+      authority: parentDoc?.authority || null,
+      sourceUrl: parentDoc?.source_url || null,
+      similarity: sim,
     };
   });
 
@@ -721,27 +499,24 @@ async function countActiveDocumentsInJurisdictionAndCategory(
   jurisdiction: 'india' | 'international',
   category?: string | null
 ): Promise<number> {
-  if (isPostgresDirectAvailable()) {
-    const pool = getPgPool();
-    if (pool) {
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const client = await pool.connect();
       try {
-        const client = await pool.connect();
-        try {
-          let sql = `SELECT COUNT(*)::int as count FROM documents WHERE jurisdiction = $1 AND status = 'active'`;
-          const params: any[] = [jurisdiction];
-          if (category) {
-            sql += ` AND category = $2`;
-            params.push(category);
-          }
-          const res = await client.query(sql, params);
-          return res.rows[0]?.count || 0;
-        } finally {
-          client.release();
+        let sql = `SELECT COUNT(*)::int as count FROM documents WHERE jurisdiction = $1 AND status = 'active'`;
+        const params: any[] = [jurisdiction];
+        if (category) {
+          sql += ` AND category = $2`;
+          params.push(category);
         }
-      } catch (err: any) {
-        markPostgresDirectFailure(err);
-        console.warn('Postgres countActiveDocuments error:', err.message);
+        const res = await client.query(sql, params);
+        return res.rows[0]?.count || 0;
+      } finally {
+        client.release();
       }
+    } catch (err: any) {
+      console.warn('Postgres countActiveDocuments error:', err.message);
     }
   }
 
@@ -805,23 +580,76 @@ function validateCitations(responseText: string, chunks: CandidateChunk[]): Cita
   const invalidReasons: string[] = [];
   const maxValidNum = chunks.length;
 
-  // Filter to in-bounds numbers
-  const inBoundsNumbers: number[] = [];
+  // Check 1: In-bounds check
   for (const num of usedNumbers) {
     if (num < 1 || num > maxValidNum) {
-      invalidReasons.push(`Citation [${num}] is out of bounds (only passages [1] to [${maxValidNum}] were provided).`);
-    } else {
-      inBoundsNumbers.push(num);
+      invalidReasons.push(`Citation [${num}] is invalid (only passages [1] to [${maxValidNum}] were provided).`);
     }
   }
 
-  if (inBoundsNumbers.length === 0) {
-    return { valid: false, usedNumbers: [], invalidReasons };
+  if (invalidReasons.length > 0) {
+    return { valid: false, usedNumbers, invalidReasons };
+  }
+
+  // Check 2: Topical/keyword overlap spot-check
+  const sentences = responseText.split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 0);
+
+  const stopWords = new Set([
+    'the', 'is', 'in', 'at', 'of', 'and', 'a', 'to', 'for', 'with', 'on', 'as', 'by', 'an', 'be',
+    'this', 'that', 'from', 'or', 'are', 'was', 'were', 'it', 'its', 'under', 'which', 'shall',
+    'have', 'has', 'had', 'been', 'not', 'can', 'may', 'will', 'would', 'could', 'should', 'about',
+    'into', 'than', 'then', 'also', 'such', 'any', 'each', 'all', 'both', 'between', 'does', 'did',
+    'regarding', 'applies', 'jurisdiction', 'applicable', 'regime', 'statutory', 'according', 'these',
+    'those', 'only', 'state', 'states', 'first', 'second', 'sentence', 'answers', 'query', 'question'
+  ]);
+
+  for (const sentence of sentences) {
+    const sentenceCites = [...sentence.matchAll(/\[(\d+)\]/g)].map((m) => parseInt(m[1], 10));
+    if (sentenceCites.length === 0) continue;
+
+    // For Hindi (Devanagari script) sentences, statutory claims cite English passages via legal translation
+    if (/[\u0900-\u097F]/.test(sentence)) {
+      continue;
+    }
+
+    const cleanSentence = sentence.replace(/\[\d+\]/g, ' ').toLowerCase();
+    const words = cleanSentence
+      .split(/[^a-z0-9_-]+/)
+      .filter((w) => w.length >= 3 && !stopWords.has(w));
+
+    for (const citeNum of sentenceCites) {
+      const chunk = chunks[citeNum - 1];
+      if (!chunk) continue;
+
+      const chunkCorpus = (
+        chunk.text +
+        ' ' +
+        chunk.documentTitle +
+        ' ' +
+        (chunk.authority || '') +
+        ' ' +
+        (chunk.sectionLabel || '') +
+        ' ' +
+        (chunk.category || '')
+      ).toLowerCase();
+
+      const hasOverlap = words.some((w) => {
+        if (chunkCorpus.includes(w)) return true;
+        if (w.length > 5 && chunkCorpus.includes(w.slice(0, -2))) return true;
+        return false;
+      });
+
+      if (!hasOverlap && words.length > 0) {
+        invalidReasons.push(
+          `Citation [${citeNum}] in sentence "${sentence.trim().slice(0, 60)}..." lacks topical keyword overlap with passage [${citeNum}] (${chunk.documentTitle}).`
+        );
+      }
+    }
   }
 
   return {
-    valid: true,
-    usedNumbers: inBoundsNumbers,
+    valid: invalidReasons.length === 0,
+    usedNumbers,
     invalidReasons,
   };
 }
@@ -956,8 +784,6 @@ export async function executePrompt5Pipeline(
 ): Promise<AskQuestionResult> {
   const normJurisdiction = targetJurisdiction;
   const targetLanguage = input.language || 'English';
-  const language = targetLanguage;
-  const originalQuestion = input.question;
   const isHindi = targetLanguage.toLowerCase().includes('hindi') || /[\u0900-\u097F]/.test(input.question);
   const retrievalQuestion = input.englishRetrievalQuestion || input.question;
 
@@ -990,68 +816,29 @@ export async function executePrompt5Pipeline(
   // -------------------------------------------------------------
   // Step 3: Run cosine-similarity search against "chunks" table
   // filtered to rows where chunks.jurisdiction exactly matches
-  // Retrieve candidate pool and apply Hybrid Semantic-Lexical Reranking
+  // Retrieve up to 8 candidates, then apply minimum similarity floor of 0.55
   // -------------------------------------------------------------
-  console.log(`[executePrompt5Pipeline:${normJurisdiction}:Step 3] Running hybrid similarity search in jurisdiction="${normJurisdiction}"`);
-  const topCandidates = await searchCandidateChunks(queryVector, normJurisdiction, retrievalQuery);
+  console.log(`[executePrompt5Pipeline:${normJurisdiction}:Step 3] Running similarity search in jurisdiction="${normJurisdiction}"`);
+  const topCandidates = await searchCandidateChunks(queryVector, normJurisdiction);
 
   const topScore = topCandidates.length > 0 ? topCandidates[0].similarity : 0;
-  // Dense learned embeddings typically score >= 0.40 for relevant matches,
+  // Dense learned embeddings typically score >= 0.50 for relevant matches,
   // whereas offline token-hashed vector representations score between 0.05 and 0.40.
-  const isDenseEmbedding = topScore >= 0.40;
-  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.42 : 0.04;
-  let survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
-
-  // If none exceeded the floor but candidates exist, take the top 4 candidates to ensure grounded synthesis
-  if (survivingChunks.length === 0 && topCandidates.length > 0) {
-    survivingChunks = topCandidates.slice(0, 4);
-  } else {
-    survivingChunks = survivingChunks.slice(0, 8);
-  }
+  const isDenseEmbedding = topScore >= 0.50;
+  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.55 : 0.04;
+  const survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
 
   console.log(
-    `[executePrompt5Pipeline:${normJurisdiction}:Step 3] Retrieved ${topCandidates.length} raw candidates. Surviving floor: ${survivingChunks.length}`
+    `[executePrompt5Pipeline:${normJurisdiction}:Step 3] Retrieved ${topCandidates.length} raw candidates. Surviving floor (>= ${SIMILARITY_FLOOR}): ${survivingChunks.length}`
   );
 
   const fixedAbstentionMessage = isHindi
     ? 'मेरे वर्तमान ज्ञानकोष में इस विशिष्ट प्रश्न का कोई विश्वसनीय, उद्धृत (cited) उत्तर उपलब्ध नहीं है।'
     : FIXED_ABSTENTION_MESSAGE;
 
-  // If zero chunks remain, skip straight to step 8 (abstain)
+  // If zero chunks remain after floor is applied, skip straight to step 8 (abstain)
   if (survivingChunks.length === 0) {
     console.log(`[executePrompt5Pipeline:${normJurisdiction}:Step 3] Zero chunks survived floor. Skipping to Step 8 (abstain).`);
-    lastRetrievalDiagnostic = {
-      timestamp: new Date().toISOString(),
-      query: originalQuestion,
-      retrievalQuery,
-      jurisdiction: normJurisdiction,
-      language,
-      topScore,
-      similarityFloor: SIMILARITY_FLOOR,
-      survivingCount: 0,
-      totalCandidateCount: topCandidates.length,
-      confidence: 'low',
-      shouldEscalate: true,
-      topChunks: topCandidates.slice(0, 5).map((c, idx) => ({
-        rank: idx + 1,
-        id: c.id,
-        documentId: c.document_id,
-        documentTitle: c.documentTitle,
-        authority: c.authority,
-        jurisdiction: c.jurisdiction,
-        category: c.category || 'regulatory',
-        sectionLabel: cleanSectionLabel(c.sectionLabel),
-        similarity: c.similarity,
-        survivedFloor: false,
-        similarityFloor: SIMILARITY_FLOOR,
-        textSnippet: (() => {
-          const cleaned = cleanSanskritDiacritics(c.text);
-          return cleaned.length > 250 ? cleaned.slice(0, 247) + '...' : cleaned;
-        })(),
-        fullText: cleanSanskritDiacritics(c.text),
-      })),
-    };
-
     return {
       answer: fixedAbstentionMessage,
       citations: [],
@@ -1059,37 +846,6 @@ export async function executePrompt5Pipeline(
       shouldEscalate: true,
     };
   }
-
-  // Populate last retrieval diagnostic record
-  lastRetrievalDiagnostic = {
-    timestamp: new Date().toISOString(),
-    query: originalQuestion,
-    retrievalQuery,
-    jurisdiction: normJurisdiction,
-    language,
-    topScore,
-    similarityFloor: SIMILARITY_FLOOR,
-    survivingCount: survivingChunks.length,
-    totalCandidateCount: topCandidates.length,
-    topChunks: topCandidates.slice(0, 5).map((c, idx) => ({
-      rank: idx + 1,
-      id: c.id,
-      documentId: c.document_id,
-      documentTitle: c.documentTitle,
-      authority: c.authority,
-      jurisdiction: c.jurisdiction,
-      category: c.category || 'regulatory',
-      sectionLabel: cleanSectionLabel(c.sectionLabel),
-      similarity: c.similarity,
-      survivedFloor: c.similarity >= SIMILARITY_FLOOR || survivingChunks.some((sc) => sc.id === c.id),
-      similarityFloor: SIMILARITY_FLOOR,
-      textSnippet: (() => {
-        const cleaned = cleanSanskritDiacritics(c.text);
-        return cleaned.length > 250 ? cleaned.slice(0, 247) + '...' : cleaned;
-      })(),
-      fullText: cleanSanskritDiacritics(c.text),
-    })),
-  };
 
   // -------------------------------------------------------------
   // Step 4: Build numbered context block:
@@ -1110,12 +866,12 @@ export async function executePrompt5Pipeline(
   // Step 5: Call Gemini generation model with strict system instruction
   // -------------------------------------------------------------
   const jurisdictionLabel = normJurisdiction === 'india' ? 'Indian' : 'International';
-  const systemInstruction = `You are an expert legal and regulatory assistant for the IP-SAKTI Sahayak platform providing statutory and regulatory guidance specifically for the ${jurisdictionLabel.toUpperCase()} regulatory regime. Follow these instructions:
-(a) Thoroughly answer the user's question by analyzing, synthesizing, and applying the relevant statutory, pharmacopoeial, and regulatory passages provided in the context block;
-(b) Connect the legal, quality, and regulatory principles in the context (such as prior art, Traditional Knowledge Digital Library (TKDL) bio-piracy protections, Section 3(p) non-patentability of traditional knowledge, Ayurvedic Pharmacopoeia of India monograph standards, testing criteria, or statutory definitions) directly to the user's inquiry;
-(c) Attach citation numbers in square brackets (e.g. [1], [2]) to every factual statement, rule, or monograph standard, immediately following each claim;
-(d) If specific details of the user's question are not fully settled by the provided passages, explain what the uploaded texts DO establish regarding the subject matter, and advise consulting a qualified Ayush IP facilitator;
-(e) Keep language plain, objective, authoritative, and non-alarmist, and state in the opening sentence that this section applies to the ${jurisdictionLabel} statutory and regulatory jurisdiction;
+  const systemInstruction = `You are a legal and statutory guidance assistant for the IP-SAKTI Sahayak platform providing guidance specifically for the ${jurisdictionLabel.toUpperCase()} regulatory regime. Follow these instructions explicitly and in this exact order:
+(a) answer using only the numbered passages provided in the context block for the ${jurisdictionLabel} statutory regime — never use outside knowledge, prior training, or general familiarity with other IP law regimes;
+(b) address how the user's question applies to the ${jurisdictionLabel} statutory/regulatory framework using the context passages provided;
+(c) attach a citation number in square brackets (e.g. [1], [2]) to every factual claim, immediately after the sentence containing it;
+(d) if the provided passages do not sufficiently answer the ${jurisdictionLabel} legal aspects of the question, say so plainly in one sentence instead of guessing or partially answering from gaps;
+(e) keep language plain and non-alarmist, and state in the first sentence that this section applies to the ${jurisdictionLabel} statutory jurisdiction;
 (f) ${
     isHindi
       ? 'CRITICAL: Write your ENTIRE final answer in clear, authoritative, formal Hindi (Devanagari script). Maintain all statutory citations as bracketed numbers (e.g. [1], [2]) immediately following each claim.'
@@ -1132,187 +888,51 @@ ${input.question}`;
 
   const ai = getGenAI();
 
-  async function callOpenRouterChatCompletion(system: string, user: string): Promise<string> {
-    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
-    if (!apiKey || !apiKey.trim() || apiKey.includes('your-openrouter')) return '';
-    const models = [
-      'nvidia/llama-3.1-nemotron-70b-instruct:free',
-      'nvidia/nemotron-4-340b-instruct:free',
-      'meta-llama/llama-3.3-70b-instruct:free',
-      'mistralai/mistral-small-24b-instruct-2501:free',
-      'qwen/qwen-2.5-72b-instruct:free',
-      'google/gemini-2.0-flash-001',
-    ];
-    for (const m of models) {
-      try {
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://ayush-setu.onrender.com',
-            'X-Title': 'IP-SAKTI Sahayak',
-          },
-          body: JSON.stringify({
-            model: m,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user },
-            ],
-            temperature: 0.1,
-            max_tokens: 1200,
-          }),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          const text = json?.choices?.[0]?.message?.content?.trim();
-          if (text) {
-            console.log(`[executePrompt5Pipeline] Successfully generated legal answer via OpenRouter model: ${m}`);
-            return text;
-          }
-        }
-      } catch (e: any) {
-        console.warn(`[executePrompt5Pipeline] OpenRouter model ${m} failed:`, e?.message);
-      }
-    }
-    return '';
-  }
-
   async function generateLegalAnswer(prompt: string): Promise<string> {
-    if (ai) {
-      const models = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview'];
-      for (const model of models) {
-        try {
-          const res = await ai.models.generateContent({
-            model,
-            contents: prompt,
-            config: {
-              systemInstruction,
-              temperature: 0.1,
-            },
-          });
-          const text = res.text?.trim();
-          if (text) return text;
-        } catch (err: any) {
-          console.log(`[executePrompt5Pipeline] Gemini model ${model} generation note (${err?.status || 'skipped'}), trying fallback.`);
-        }
+    if (!ai) return '';
+    const models = ['gemini-3.8-flash', 'gemini-flash-latest'];
+    for (const model of models) {
+      try {
+        const res = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            systemInstruction,
+            temperature: 0.1,
+          },
+        });
+        const text = res.text?.trim();
+        if (text) return text;
+      } catch (err: any) {
+        console.log(`[executePrompt5Pipeline] Model ${model} generation note (${err?.status || 'skipped'}), trying fallback.`);
       }
     }
-
-    // OpenRouter fallback if Gemini is rate limited or unavailable
-    const orText = await callOpenRouterChatCompletion(systemInstruction, prompt);
-    if (orText) return orText;
-
     return '';
   }
 
   let generatedText = '';
-  generatedText = await generateLegalAnswer(userPrompt);
+
+  if (ai) {
+    generatedText = await generateLegalAnswer(userPrompt);
+  }
 
   if (!generatedText) {
-    // Smart extractive answer generator strictly grounded on surviving chunks
-    const stopWords = new Set([
-      'what', 'is', 'the', 'difference', 'between', 'and', 'in', 'of', 'for',
-      'how', 'why', 'where', 'when', 'does', 'can', 'should', 'with', 'under',
-      'per', 'regarding', 'about', 'explain', 'give', 'list', 'define', 'to', 'a', 'an'
-    ]);
-    const queryTokens = input.question
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2 && !stopWords.has(w));
-
-    const candidatePoints: { title: string; section: string; text: string; citationNum: number; score: number }[] = [];
-
-    survivingChunks.slice(0, 3).forEach((chunk, idx) => {
-      const citationNum = idx + 1;
-      const cleaned = cleanSanskritDiacritics(chunk.text);
-      const sentences = cleaned
-        .split(/(?<=[.!?])\s+|\n{2,}/)
-        .map((s) => s.trim())
-        .filter((s) => s.length >= 25 &&
-          !s.toLowerCase().startsWith('government of india') &&
-          !s.toLowerCase().startsWith('the ayurvedic pharmacopoeia of india part') &&
-          !s.toLowerCase().startsWith('department of ayurveda')
-        );
-
-      sentences.forEach((s) => {
-        const lower = s.toLowerCase();
-        let matchScore = 0;
-        queryTokens.forEach((tok) => {
-          if (lower.includes(tok)) matchScore += 2;
-        });
-        if (/stage|paka|varti|heating|characteristics|used for|method|definition|boiling|kalka/i.test(s)) {
-          matchScore += 1.5;
-        }
-        if (matchScore > 0) {
-          // Detect sub-clause heading inside the sentence (e.g. "1. Mṛdu Pāka (Mild Cooking):" or "Khara Pāka:")
-          let specificSection = cleanSectionLabel(chunk.sectionLabel);
-          let bodyText = s;
-          const subMatch = s.match(/^([0-9]+\.\s+[A-Za-zāīūṛśṣñḍṭṃḥ\s\(\)\-]{3,40}|[A-Z][A-Za-zāīūṛśṣñḍṭṃḥ\s\(\)\-]{3,35})\s*:\s*(.+)$/s);
-          if (subMatch) {
-            specificSection = subMatch[1].trim();
-            bodyText = subMatch[2].trim();
-          } else if (/^\d+\.?$/.test(specificSection)) {
-            specificSection = 'Relevant Provision';
-          }
-
-          candidatePoints.push({
-            title: chunk.documentTitle,
-            section: specificSection,
-            text: bodyText,
-            citationNum,
-            score: matchScore,
-          });
-        }
-      });
-    });
-
-    candidatePoints.sort((a, b) => b.score - a.score);
-
-    if (candidatePoints.length > 0) {
-      const selected: typeof candidatePoints = [];
-      const seen = new Set<string>();
-      for (const pt of candidatePoints) {
-        const key = pt.text.slice(0, 40).toLowerCase();
-        if (!seen.has(key)) {
-          seen.add(key);
-          selected.push(pt);
-          if (selected.length >= 3) break;
-        }
-      }
-
-      if (isHindi) {
-        const docHeader = selected[0].title;
-        const bullets = selected
-          .map((pt) => `• **${pt.section}**: ${pt.text} [${pt.citationNum}]`)
-          .join('\n\n');
-        generatedText = `**वैधानिक उद्धरण एवं विश्लेषणात्मक निष्कर्ष (${docHeader}):**\n\n${bullets}`;
+    // Grounded fallback generator strictly drawn from surviving chunks
+    const topChunk = survivingChunks[0];
+    const secondChunk = survivingChunks.length > 1 ? survivingChunks[1] : null;
+    if (isHindi) {
+      const topHindi = getHindiParaphraseFallback(topChunk);
+      if (secondChunk) {
+        const secondHindi = getHindiParaphraseFallback(secondChunk);
+        generatedText = `${topChunk.documentTitle} (${topChunk.sectionLabel || 'प्रावधान'}) के अनुसार, ${topHindi} [1]। इसके अतिरिक्त, ${secondChunk.documentTitle} (${secondChunk.sectionLabel || 'प्रावधान'}) के तहत, ${secondHindi} [2]।`;
       } else {
-        const docHeader = selected[0].title;
-        const bullets = selected
-          .map((pt) => `• **${pt.section}**: ${pt.text} [${pt.citationNum}]`)
-          .join('\n\n');
-        generatedText = `**Statutory & Monograph Guidance (${docHeader}):**\n\n${bullets}`;
+        generatedText = `${topChunk.documentTitle} (${topChunk.sectionLabel || 'प्रावधान'}) के अनुसार, ${topHindi} [1]।`;
       }
     } else {
-      // Fallback to top chunk's first substantive informative sentence
-      const topChunk = survivingChunks[0];
-      const cleanedTop = cleanSanskritDiacritics(topChunk.text);
-      const sentences = cleanedTop
-        .split(/(?<=[.!?])\s+|\n+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length >= 30 &&
-          !s.toLowerCase().startsWith('the ayurvedic pharmacopoeia') &&
-          !s.toLowerCase().startsWith('government of india') &&
-          !s.toLowerCase().startsWith('appendix-')
-        );
-      const leadSentence = sentences[0] || cleanedTop.slice(0, 200);
-
-      if (isHindi) {
-        generatedText = `**वैधानिक उद्धरण (${topChunk.documentTitle}):**\n• **${cleanSectionLabel(topChunk.sectionLabel)}**: ${leadSentence} [1]`;
+      if (secondChunk) {
+        generatedText = `Under ${topChunk.documentTitle} (${topChunk.sectionLabel || 'Section'}), ${topChunk.text.slice(0, 240).trim()} [1]. In addition, under ${secondChunk.documentTitle} (${secondChunk.sectionLabel || 'Section'}), ${secondChunk.text.slice(0, 240).trim()} [2].`;
       } else {
-        generatedText = `**Statutory & Monograph Guidance (${topChunk.documentTitle}):**\n• **${cleanSectionLabel(topChunk.sectionLabel)}**: ${leadSentence} [1]`;
+        generatedText = `Under ${topChunk.documentTitle} (${topChunk.sectionLabel || 'Section'}), ${topChunk.text.slice(0, 280).trim()} [1].`;
       }
     }
   }
@@ -1407,13 +1027,13 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
 
   let confidence: 'high' | 'medium' | 'low' = 'medium';
 
-  const minSimFloor = isDenseEmbedding ? 0.45 : 0.04;
-  const highSimThreshold = isDenseEmbedding ? 0.60 : 0.08;
+  const minSimFloor = isDenseEmbedding ? 0.6 : 0.04;
+  const highSimThreshold = isDenseEmbedding ? 0.78 : 0.10;
 
-  if (avgSimilarity < minSimFloor || survivingChunks.length === 0 || !validation.valid || validation.usedNumbers.length === 0) {
+  if (avgSimilarity < minSimFloor || survivingChunks.length === 0 || !validation.valid) {
     confidence = 'low';
   } else if (
-    citationCoverage >= 50 &&
+    citationCoverage >= 75 &&
     avgSimilarity >= highSimThreshold &&
     (distinctDocsCited >= 2 || totalActiveDocsInCat <= 1)
   ) {
@@ -1431,23 +1051,13 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
     confidence,
   });
 
-  if (lastRetrievalDiagnostic && lastRetrievalDiagnostic.query === originalQuestion) {
-    lastRetrievalDiagnostic.confidence = confidence;
-    lastRetrievalDiagnostic.shouldEscalate = confidence === 'low';
-  }
-
   // -------------------------------------------------------------
-  // Step 8: If zero citations survived or model explicitly gave an abstention, return fixed message
+  // Step 8: If confidence is "low", return exact fixed abstention message
+  // and shouldEscalate: true
   // -------------------------------------------------------------
-  const isExplicitAbstention =
-    validation.usedNumbers.length === 0 ||
-    survivingChunks.length === 0 ||
-    /no reliable, cited answer/i.test(finalAnswer) ||
-    /passages? (do not|don't) (sufficiently|contain|provide)/i.test(finalAnswer);
-
-  if (isExplicitAbstention) {
+  if (confidence === 'low') {
     return {
-      answer: fixedAbstentionMessage,
+      answer: FIXED_ABSTENTION_MESSAGE,
       citations: [],
       confidence: 'low',
       shouldEscalate: true,
@@ -1488,23 +1098,12 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
         document_id: chunk.document_id,
         documentTitle: chunk.documentTitle,
         authority: chunk.authority,
-        sectionLabel: cleanSectionLabel(chunk.sectionLabel),
-        snippet: (() => {
-          const cleaned = cleanSanskritDiacritics(chunk.text);
-          const substantive = cleaned
-            .split(/(?<=[.!?])\s+|\n+/)
-            .map((s) => s.trim())
-            .filter((s) => s.length >= 25 &&
-              !s.toLowerCase().startsWith('the ayurvedic pharmacopoeia of india part') &&
-              !s.toLowerCase().startsWith('government of india')
-            );
-          const chosen = substantive[0] || cleaned;
-          return chosen.length > 180 ? chosen.slice(0, 177) + '...' : chosen;
-        })(),
+        sectionLabel: chunk.sectionLabel,
+        snippet: chunk.text.length > 200 ? chunk.text.slice(0, 200) : chunk.text,
         hindiParaphrase: isHindi
           ? hindiParaphrasesMap.get(num) || getHindiParaphraseFallback(chunk)
           : undefined,
-        fullText: cleanSanskritDiacritics(chunk.text),
+        fullText: chunk.text,
         sourceUrl: chunk.sourceUrl,
         jurisdiction: chunk.jurisdiction,
         category: chunk.category,
@@ -1517,7 +1116,7 @@ ${survivingChunks.map((c, i) => `  [${i + 1}] (${c.documentTitle}): ${c.text.sli
     answer: finalAnswer,
     citations,
     confidence,
-    shouldEscalate: confidence === 'low',
+    shouldEscalate: false,
   };
 }
 
@@ -1703,76 +1302,3 @@ export function findCitedSentenceInChunk(
 
   return bestSentence;
 }
-
-/**
- * Executes a simulated diagnostic retrieval for any query,
- * returning the top candidate chunks, similarity scores, and floor status.
- */
-export async function runDiagnosticQuery(params: {
-  question: string;
-  jurisdiction?: 'india' | 'international' | string;
-  language?: string;
-}): Promise<RetrievalDiagnosticInfo> {
-  const normJurisdiction = (params.jurisdiction?.toLowerCase().includes('inter')
-    ? 'international'
-    : 'india') as 'india' | 'international';
-  const language = params.language || 'English';
-  const isHindi = language.toLowerCase() === 'hindi';
-
-  let queryForRetrieval = params.question.trim();
-  if (isHindi && /[\u0900-\u097F]/.test(queryForRetrieval)) {
-    queryForRetrieval = await translateHindiToEnglish(queryForRetrieval);
-  }
-
-  const retrievalQuery = `${queryForRetrieval} — jurisdiction: ${normJurisdiction}`;
-  const queryVector = await getChunkEmbedding(retrievalQuery);
-  const topCandidates = await searchCandidateChunks(queryVector, normJurisdiction, retrievalQuery);
-
-  const topScore = topCandidates.length > 0 ? topCandidates[0].similarity : 0;
-  const isDenseEmbedding = topScore >= 0.40;
-  const SIMILARITY_FLOOR = isDenseEmbedding ? 0.42 : 0.04;
-  let survivingChunks = topCandidates.filter((c) => c.similarity >= SIMILARITY_FLOOR);
-
-  if (survivingChunks.length === 0 && topCandidates.length > 0) {
-    survivingChunks = topCandidates.slice(0, 4);
-  } else {
-    survivingChunks = survivingChunks.slice(0, 8);
-  }
-
-  const diagnosticChunks: DiagnosticChunkItem[] = topCandidates.slice(0, 5).map((c, idx) => ({
-    rank: idx + 1,
-    id: c.id,
-    documentId: c.document_id,
-    documentTitle: c.documentTitle,
-    authority: c.authority,
-    jurisdiction: c.jurisdiction,
-    category: c.category || 'regulatory',
-    sectionLabel: cleanSectionLabel(c.sectionLabel),
-    similarity: c.similarity,
-    survivedFloor: c.similarity >= SIMILARITY_FLOOR || survivingChunks.some((sc) => sc.id === c.id),
-    similarityFloor: SIMILARITY_FLOOR,
-    textSnippet: (() => {
-      const cleaned = cleanSanskritDiacritics(c.text);
-      return cleaned.length > 280 ? cleaned.slice(0, 277) + '...' : cleaned;
-    })(),
-    fullText: cleanSanskritDiacritics(c.text),
-  }));
-
-  const info: RetrievalDiagnosticInfo = {
-    timestamp: new Date().toISOString(),
-    query: params.question.trim(),
-    retrievalQuery,
-    jurisdiction: normJurisdiction,
-    language,
-    topScore,
-    similarityFloor: SIMILARITY_FLOOR,
-    survivingCount: survivingChunks.length,
-    totalCandidateCount: topCandidates.length,
-    confidence: topScore >= 0.6 ? 'high' : topScore >= 0.42 ? 'medium' : 'low',
-    shouldEscalate: topScore < 0.42,
-    topChunks: diagnosticChunks,
-  };
-
-  return info;
-}
-

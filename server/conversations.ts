@@ -129,16 +129,11 @@ export async function appendMessageToConversation(convId: string, message: any):
 }
 
 /**
- * Resets / clears in-memory cache for a conversation or all conversations.
+ * Resets / clears in-memory cache for a conversation (Prompt 13 cache requirement).
  */
-export function clearConversationCache(convId?: string): void {
-  if (convId) {
-    inMemoryConversationCache.delete(convId);
-    console.log(`[Conversations] Cleared in-memory cache for conversation: ${convId}`);
-  } else {
-    inMemoryConversationCache.clear();
-    console.log(`[Conversations] Cleared all in-memory conversation caches.`);
-  }
+export function clearConversationCache(convId: string): void {
+  inMemoryConversationCache.delete(convId);
+  console.log(`[Conversations] Cleared in-memory cache for conversation: ${convId}`);
 }
 
 /**

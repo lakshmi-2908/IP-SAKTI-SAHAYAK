@@ -97,19 +97,6 @@ export const EscalationModal: React.FC<EscalationModalProps> = ({
     }
   }, [isOpen, questionSummary, classification, language]);
 
-  // Close on Escape key
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
-
   if (!isOpen) return null;
 
   // Simple format check for contact: looks like an email or looks like a phone number
@@ -192,7 +179,6 @@ export const EscalationModal: React.FC<EscalationModalProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto animate-fade-in"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="escalation-modal-title"
     >
       <div
         id="escalation-modal-dialog"
@@ -205,7 +191,7 @@ export const EscalationModal: React.FC<EscalationModalProps> = ({
               <UserCheck className="w-5 h-5 text-teal-300" />
             </div>
             <div>
-              <h2 id="escalation-modal-title" className="text-base font-bold tracking-tight font-display">
+              <h2 className="text-base font-bold tracking-tight font-display">
                 {isHindi ? 'आयुष आईपी सुविधाकर्ता से परामर्श' : 'AYUSH Legal Facilitator Consultation'}
               </h2>
               <p className="text-xs text-teal-200/80">

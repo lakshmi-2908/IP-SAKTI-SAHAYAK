@@ -1,7 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import * as mammoth from 'mammoth';
 import {
   ShieldAlert,
   KeyRound,
@@ -10,6 +7,7 @@ import {
   CheckCircle2,
   AlertCircle,
   FolderUp,
+  Sparkles,
   ChevronRight,
   Database,
   ArrowLeft,
@@ -30,142 +28,7 @@ import {
   Calendar,
   Globe,
   Languages,
-  Trash2,
-  Eye,
-  EyeOff,
-  LogOut,
-  Lock,
-  Activity,
-  Play,
-  HelpCircle,
-  Sparkles,
-  ChevronDown,
-  ChevronUp,
-  CheckSquare,
-  BarChart2,
-  SlidersHorizontal,
-  Award,
 } from 'lucide-react';
-import { AdminDiagnosticView } from './AdminDiagnosticView';
-import { AdminBenchmarksView } from './AdminBenchmarksView';
-
-// Configure the pdf.js worker (bundled by Vite as a static asset URL)
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
-export interface DiagnosticChunkItem {
-  rank: number;
-  id: string;
-  documentId: string;
-  documentTitle: string;
-  authority: string | null;
-  jurisdiction: string;
-  category: string;
-  sectionLabel: string;
-  similarity: number;
-  survivedFloor: boolean;
-  similarityFloor: number;
-  textSnippet: string;
-  fullText: string;
-}
-
-export interface RetrievalDiagnosticInfo {
-  timestamp: string;
-  query: string;
-  retrievalQuery: string;
-  jurisdiction: string;
-  language: string;
-  topScore: number;
-  similarityFloor: number;
-  survivingCount: number;
-  totalCandidateCount: number;
-  confidence?: 'high' | 'medium' | 'low';
-  shouldEscalate?: boolean;
-  topChunks: DiagnosticChunkItem[];
-}
-
-export interface BenchmarkTestQuestion {
-  id: string;
-  category: string;
-  formulation: string;
-  question: string;
-  expectedAnswerSummary: string;
-  statutoryReference: string;
-  recommendedJurisdiction: 'india' | 'international';
-  diagnosticExplanation: string;
-}
-
-export const AYURVEDIC_TEST_SUITE: BenchmarkTestQuestion[] = [
-  {
-    id: 'api-paka-stages',
-    category: 'Sneha Kalpana',
-    formulation: 'Ghrita & Taila Formulations',
-    question: 'What are the characteristic testing stages of Paka Lakshana in Sneha Kalpana (Mridu, Madhyama, and Khara Paka)?',
-    expectedAnswerSummary: 'According to Kalpana Paribhasha and Sharangadhara Samhita cited in API Part-II Vol-II, Sneha Paka has three distinct stages: (1) Mridu Paka (mild cooking) where the Kalka (paste) is soft and waxy, used for Nasya (nasal therapy); (2) Madhyama Paka (intermediate cooking) where Kalka rolled between fingers forms a wick (Varti) without sticking and does not produce a crackling sound when put on fire, used for Pana (internal consumption) and Basti (enema); and (3) Khara Paka (hard cooking) where Kalka is slightly harder and gritty, used for Abhyanga (external massage).',
-    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, Section 4: General Methods (Sneha Kalpana / Paka Lakshana)',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Validates whether the retriever extracts specific Sanskrit/classical terms (Varti, Kalka, Nasya, Pana, Abhyanga) and distinguishes between the three therapeutic cooking stages without confusion.',
-  },
-  {
-    id: 'api-avaleha-standards',
-    category: 'Avaleha Kalpana',
-    formulation: 'Semisolid Electuary Formulations',
-    question: 'What pharmacopoeial characteristics and tests define a properly prepared Avaleha formulation?',
-    expectedAnswerSummary: 'In API Part-II Vol-II, Avaleha (confection/electuary) must satisfy specific organoleptic and physical tests: (1) Tantumatva (formation of a distinct thread when pressed between thumb and index finger); (2) Apsu Majjana (sinks in water without dispersing rapidly); (3) Pidite Mudra (preserves finger impression when pressed); and (4) Gandha-Varna-Rasa Utpatti (attainment of characteristic aroma, color, and taste of specified ingredients without caramelization or charring).',
-    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, General Notice: Avaleha Testing Guidelines',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Tests retrieval of physicochemical parameters and classical shelf-life/consistency tests for semisolid Ayurvedic preparations.',
-  },
-  {
-    id: 'api-bhasma-pariksha',
-    category: 'Bhasma Kalpana',
-    formulation: 'Herbo-Mineral / Metallic Calcinations',
-    question: 'What are the classical testing parameters for verifying the completion of Bhasma preparation (Varitaratva, Rekhapurnatva, Apunarbhava)?',
-    expectedAnswerSummary: 'API Part-II standards specify that genuine Bhasma must pass classical physical tests: (1) Varitaratva (particles float gently on stagnant water surface); (2) Rekhapurnatva (particles are so micro-fine that they enter the furrows of fingers when rubbed); (3) Apunarbhava (when heated with Mitra Panchaka / flux, it does not revert to metallic state); and (4) Niruttha (when heated with a silver leaf, it does not alloy or tarnish the silver).',
-    statutoryReference: 'The Ayurvedic Pharmacopoeia of India Part-II Vol-II, General Methods of Bhasma Pariksha',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Ensures the system retrieves authentic nano-particulate testing standards for metallic and mineral Ayurvedic compounds.',
-  },
-  {
-    id: 'api-shelf-life-rule161b',
-    category: 'Regulatory Standards',
-    formulation: 'Classical Ayurvedic Formulations',
-    question: 'What is the statutory shelf life and expiry period for Ayurvedic Churna, Vati, and Asava-Arishta under the Drugs and Cosmetics Rules?',
-    expectedAnswerSummary: 'Under Rule 161B of the Drugs and Cosmetics Rules 1945 (as amended): Churna (herbal powder) typically carries a shelf life of 2 years in hermetic containers; Vati / Gutika (tablets and pills) carry 3 years (up to 5 years for mineral/bhasma containing); Asava and Arishta (self-generated fermented liquids) have no expiry limit or a prolonged 10-year period because quality improves with natural maturation; and Sneha (Ghrita and Taila) carry a 2 to 3-year statutory shelf life.',
-    statutoryReference: 'Drugs and Cosmetics Rules 1945, Rule 161B (Expiry Period of Ayurvedic Medicines) & API Monograph Shelf-Life Notices',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Tests the retrieval of statutory expiry standards differentiating fermented formulations (Asava/Arishta) from raw herb powders (Churna).',
-  },
-  {
-    id: 'ip-section3p-patent',
-    category: 'Patent Law & TKDL',
-    formulation: 'Traditional Knowledge Defense',
-    question: 'How does Section 3(p) of the Indian Patents Act bar patentability for Ayurvedic herbal formulations, and what overcomes the objection?',
-    expectedAnswerSummary: 'Section 3(p) of the Indian Patents Act 1970 explicitly states that an invention which in effect is traditional knowledge or an aggregation or duplication of known properties of traditionally known components is not patentable. To overcome a Section 3(p) objection, an applicant must demonstrate a non-obvious synergistic technical effect (supported by comparative experimental pharmacology) showing that the combination yields unexpected efficacy exceeding the mere additive sum of the individual herbs documented in texts like Charaka Samhita or API.',
-    statutoryReference: 'Indian Patents Act 1970, Section 3(p) & Indian Patent Office AYUSH Guidelines (2018)',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Tests legal grounding under Indian IP law, specifically how traditional knowledge from the TKDL repository prevents biopiracy and frivolous evergreen patents.',
-  },
-  {
-    id: 'regulatory-rule158b-license',
-    category: 'Manufacturing Licensing',
-    formulation: 'Classical vs. Patent/Proprietary Ayurvedic Medicines',
-    question: 'What safety and efficacy proof is mandated under Rule 158B of the Drugs and Cosmetics Rules for obtaining an Ayurvedic manufacturing license?',
-    expectedAnswerSummary: 'Under Rule 158B of the Drugs and Cosmetics Rules 1945: For Classical (Shastric) Ayurvedic medicines manufactured strictly in accordance with authoritative texts in the First Schedule, no clinical trial data is required—only proof of classical textual reference in recognized pharmacopoeias. For Patent or Proprietary (P&P) Ayurvedic formulations containing new combinations or extract ratios, the applicant must submit acute toxicity data (LD50), published scientific literature on safety, and evidence of therapeutic efficacy or pilot clinical study results to the State Licensing Authority.',
-    statutoryReference: 'Drugs and Cosmetics Rules 1945, Rule 158B (Proof of Effectiveness for Ayurvedic, Siddha, and Unani Medicines)',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Validates distinction between classical Ayurvedic monographs (where textual authority suffices) and modern proprietary Ayurvedic products.',
-  },
-  {
-    id: 'abs-section6-nba',
-    category: 'Biological Diversity Act',
-    formulation: 'Indian Biological Resources Export & IP',
-    question: 'When is prior approval from the National Biodiversity Authority (NBA) required before applying for an intellectual property right based on Indian herbs?',
-    expectedAnswerSummary: 'Under Section 6 of the Biological Diversity Act 2002, no person can apply for any intellectual property right, in or outside India, for any invention based on any research or information on a biological resource obtained from India without obtaining prior approval from the National Biodiversity Authority (NBA). For Indian citizens, approval may be obtained before grant; for non-citizens/foreign entities (Section 3), prior NBA approval is mandatory before even obtaining or researching the biological resource.',
-    statutoryReference: 'Biological Diversity Act 2002, Section 6(1) & NBA Guidelines on Access and Benefit Sharing (ABS)',
-    recommendedJurisdiction: 'india',
-    diagnosticExplanation: 'Validates strict compliance requirements for biodiversity clearance prior to patent grant for herbal and natural product innovations.',
-  }
-];
 
 interface MetadataSuggestion {
   jurisdiction: 'india' | 'international';
@@ -201,116 +64,73 @@ interface IngestedDoc {
   chunk_count: number;
 }
 
-export interface AdminPortalProps {
+interface AdminPortalProps {
   onNavigateHome: () => void;
-  onSessionChange?: (active: boolean) => void;
 }
 
-// Strictly session-bound session management (lives in sessionStorage only, purged on tab/browser close)
-const getStoredSessionToken = (): string => {
-  try {
-    // Purge any legacy localStorage keys to ensure zero credential leakage
-    localStorage.removeItem('ipsakti_admin_passcode');
-    localStorage.removeItem('ipsakti_admin_authenticated');
-    localStorage.removeItem('ipsakti_admin_session_token');
-    return sessionStorage.getItem('ipsakti_admin_session_token') || '';
-  } catch {
-    return '';
-  }
-};
+const SAMPLE_DOCS: QueuedFile[] = [
+  {
+    name: 'Patents_Act_1970_Section_3p.txt',
+    size: 2450,
+    rawText: `THE PATENTS ACT, 1970 (Act No. 39 of 1970)
+Office of the Controller General of Patents, Designs and Trade Marks (CGPDTM), Government of India.
+Official Gazette Reference: Section 3(p).
 
-const getStoredPasscode = (): string => {
-  try {
-    return sessionStorage.getItem('ipsakti_admin_passcode') || '';
-  } catch {
-    return '';
-  }
-};
+Section 3: What are not inventions.
+The following are not inventions within the meaning of this Act:
+(p) an invention which in effect, is traditional knowledge or which is an aggregation or duplication of known properties of traditionally known component or components.
 
-const getStoredIsAuthenticated = (): boolean => {
-  try {
-    return (
-      sessionStorage.getItem('ipsakti_admin_authenticated') === 'true' &&
-      (!!sessionStorage.getItem('ipsakti_admin_session_token') ||
-        !!sessionStorage.getItem('ipsakti_admin_passcode'))
-    );
-  } catch {
-    return false;
-  }
-};
+Explanation:
+Patents shall not be granted for traditional knowledge associated with medicinal systems including Ayurveda, Siddha, and Unani formulations documented in classical texts. Any derivative formulation must satisfy rigorous non-obviousness criteria and demonstrate non-aggregation synergy under Guidelines for Examination of Patent Applications relating to Traditional Knowledge.
 
-export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSessionChange }) => {
-  // Multi-step Authentication State:
-  // Step 1: Master Administrative Passcode
-  // Step 2: Statutory Authority & Security PIN Verification Challenge
-  const [authStep, setAuthStep] = useState<1 | 2>(1);
-  const [challengeToken, setChallengeToken] = useState<string>('');
-  const [securityPin, setSecurityPin] = useState<string>('');
-  const [authorityDeclaration, setAuthorityDeclaration] = useState<boolean>(true);
+Authority: Indian Patent Office (CGPDTM), Ministry of Commerce and Industry.
+Source: https://ipindia.gov.in/patents.htm`,
+  },
+  {
+    name: 'TKDL_Turmeric_Neem_Revocation_Case.txt',
+    size: 3120,
+    rawText: `TRADITIONAL KNOWLEDGE DIGITAL LIBRARY (TKDL) - CASE SUMMARY
+Council of Scientific and Industrial Research (CSIR) and Ministry of Ayush, New Delhi, India.
 
-  const [passcode, setPasscode] = useState<string>(() => getStoredPasscode());
-  const [sessionToken, setSessionToken] = useState<string>(() => getStoredSessionToken());
-  const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => getStoredIsAuthenticated());
+Subject: Landmark Revocation of Foreign Patent Claims on Curcuma longa (Turmeric) and Azadirachta indica (Neem).
+Jurisdiction: International (USPTO Patent No. 5,401,504 / European Patent Office EP 0436257).
+Category: TKDL / Prior Art Opposition.
+
+Case Overview:
+In 1995, the United States Patent and Trademark Office granted a patent on "Use of Turmeric in Wound Healing" to the University of Mississippi Medical Center. CSIR established prior art through ancient Ayurvedic treatises (including Charaka Samhita and Bhavaprakasha Nighantu) establishing that the therapeutic wound-healing efficacy of Haridra had been in public usage in India for centuries.
+
+The USPTO subsequently revoked all claims for lack of novelty. Similarly, the European Patent Office revoked W.R. Grace's patent on antifungal properties of Neem tree extract following formal opposition based on classical Sanskrit citations indexed by the TKDL Task Force.
+
+Issuing Body: CSIR-TKDL & Ministry of Ayush.
+Official Reference: https://tkdl.res.in`,
+  },
+  {
+    name: 'Biological_Diversity_Act_2002_ABS.txt',
+    size: 2890,
+    rawText: `THE BIOLOGICAL DIVERSITY ACT, 2002 (Act No. 18 of 2003)
+National Biodiversity Authority (NBA), Chennai, India.
+
+Section 6: Application for intellectual property rights.
+(1) No person shall apply for any intellectual property right, by whatever name called, in or outside India for any invention based on any research or information on a biological resource obtained from India without obtaining the previous approval of the National Biodiversity Authority before making such application.
+
+Provided that, if a person applies for a patent, permission of the National Biodiversity Authority may be obtained after the acceptance of the patent but before the sealing of the patent by the patent authority concerned.
+
+Section 21: Determination of equitable benefit sharing by National Biodiversity Authority.
+The National Biodiversity Authority shall ensure that the terms and conditions subject to which approval is granted secure equitable sharing in benefits arising out of the use of accessed biological resources, their by-products, innovations, and practices associated with their use and applications.
+
+Authority: National Biodiversity Authority (NBA), Ministry of Environment, Forest and Climate Change.
+Source: https://nbaindia.org`,
+  },
+];
+
+export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome }) => {
+  // Passcode gating
+  const [passcode, setPasscode] = useState('');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem('ipsakti_admin_authenticated') === 'true';
+  });
   const [authError, setAuthError] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
-
-  // Helper to retrieve auth headers (both session token and passcode for maximum reliability)
-  const getAuthHeaders = (): Record<string, string> => {
-    const token = sessionToken || getStoredSessionToken();
-    const code = passcode.trim() || getStoredPasscode();
-    const headers: Record<string, string> = {};
-    if (token) {
-      headers['x-admin-session-token'] = token;
-    }
-    if (code) {
-      headers['x-admin-passcode'] = code;
-    }
-    return headers;
-  };
-
-  // Safe logout function that completely terminates the session and invalidates on server
-  const handleLogout = async () => {
-    const token = sessionToken || getStoredSessionToken();
-    if (token) {
-      try {
-        await fetch('/api/admin/auth/logout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionToken: token }),
-        }).catch(() => {});
-      } catch {
-        // ignore
-      }
-    }
-    try {
-      sessionStorage.removeItem('ipsakti_admin_authenticated');
-      sessionStorage.removeItem('ipsakti_admin_session_token');
-      sessionStorage.removeItem('ipsakti_admin_passcode');
-      localStorage.removeItem('ipsakti_admin_authenticated');
-      localStorage.removeItem('ipsakti_admin_session_token');
-      localStorage.removeItem('ipsakti_admin_passcode');
-    } catch {
-      // ignore
-    }
-    setSessionToken('');
-    setPasscode('');
-    setChallengeToken('');
-    setAuthStep(1);
-    setIsAuthenticated(false);
-    setAuthError(null);
-    if (onSessionChange) {
-      onSessionChange(false);
-    }
-  };
-
-  // Session expiry / auth failure handler
-  const handleAuthFailure = (message?: string) => {
-    handleLogout();
-    setAuthError(
-      message || 'Your administrative session has expired. Please authenticate to continue.'
-    );
-  };
 
   // Ingestion metrics
   const [stats, setStats] = useState<{
@@ -367,106 +187,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  // Navigation Tabs for Admin Portal
-  const [activeAdminTab, setActiveAdminTab] = useState<'corpus' | 'diagnostic' | 'benchmarks'>('corpus');
-
-  // Diagnostic State for Last User Query and Live Test Runner
-  const [lastDiagnostic, setLastDiagnostic] = useState<RetrievalDiagnosticInfo | null>(null);
-  const [isLoadingDiagnostic, setIsLoadingDiagnostic] = useState<boolean>(false);
-  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
-
-  // Live Query Tester State
-  const [testQueryInput, setTestQueryInput] = useState<string>(
-    'What are the characteristic testing stages of Paka Lakshana in Sneha Kalpana (Mridu, Madhyama, and Khara Paka)?'
-  );
-  const [testQueryJurisdiction, setTestQueryJurisdiction] = useState<'india' | 'international'>('india');
-  const [testQueryLanguage, setTestQueryLanguage] = useState<string>('English');
-  const [isTestingQuery, setIsTestingQuery] = useState<boolean>(false);
-  const [testQueryResult, setTestQueryResult] = useState<RetrievalDiagnosticInfo | null>(null);
-  const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
-
-  const toggleChunkExpanded = (id: string) => {
-    setExpandedChunkIds((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  // Fetch last query diagnostic from server
-  const fetchLastDiagnostic = async () => {
-    setIsLoadingDiagnostic(true);
-    setDiagnosticError(null);
-    try {
-      const res = await fetch('/api/admin/diagnostic/last-retrieval', {
-        headers: { ...getAuthHeaders() },
-      });
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
-      const data = await res.json();
-      if (data.success) {
-        setLastDiagnostic(data.diagnostic);
-      } else {
-        setDiagnosticError(data.error || 'No prior query diagnostic found.');
-      }
-    } catch (err: any) {
-      setDiagnosticError(err.message || 'Failed to load diagnostic telemetry.');
-    } finally {
-      setIsLoadingDiagnostic(false);
-    }
-  };
-
-  // Run interactive diagnostic test query
-  const handleRunTestQuery = async (customQuery?: string, customJurisdiction?: 'india' | 'international') => {
-    const q = (customQuery !== undefined ? customQuery : testQueryInput).trim();
-    const jur = customJurisdiction || testQueryJurisdiction;
-    if (!q) return;
-
-    setIsTestingQuery(true);
-    setDiagnosticError(null);
-    try {
-      const res = await fetch('/api/admin/diagnostic/test-query', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
-        body: JSON.stringify({
-          question: q,
-          jurisdiction: jur,
-          language: testQueryLanguage,
-        }),
-      });
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
-      const data = await res.json();
-      if (data.success && data.diagnostic) {
-        setTestQueryResult(data.diagnostic);
-        setTestQueryInput(q);
-        if (customJurisdiction) {
-          setTestQueryJurisdiction(customJurisdiction);
-        }
-      } else {
-        setDiagnosticError(data.error || 'Diagnostic query run failed.');
-      }
-    } catch (err: any) {
-      setDiagnosticError(err.message || 'Network error running diagnostic query.');
-    } finally {
-      setIsTestingQuery(false);
-    }
-  };
-
   // Fetch all rows from the "documents" table
   const fetchDocuments = async () => {
+    const storedPasscode = sessionStorage.getItem('ipsakti_admin_passcode') || passcode;
     setIsLoadingDocs(true);
     try {
       const res = await fetch('/api/admin/documents', {
-        headers: { ...getAuthHeaders() },
+        headers: { 'x-admin-passcode': storedPasscode },
       });
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
       if (res.ok) {
         const data = await res.json();
         if (data.documents && Array.isArray(data.documents)) {
@@ -482,14 +210,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
 
   // Load stats once authenticated
   const fetchStats = async () => {
+    const storedPasscode = sessionStorage.getItem('ipsakti_admin_passcode') || passcode;
     try {
       const res = await fetch('/api/admin/stats', {
-        headers: { ...getAuthHeaders() },
+        headers: { 'x-admin-passcode': storedPasscode },
       });
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
       if (res.ok) {
         const data = await res.json();
         setStats(data);
@@ -504,6 +229,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     if (togglingId) return;
     const targetStatus: 'active' | 'deactivated' =
       doc.status === 'active' ? 'deactivated' : 'active';
+    const storedPasscode = sessionStorage.getItem('ipsakti_admin_passcode') || passcode;
 
     setTogglingId(doc.id);
     setStatusFeedback(null);
@@ -518,15 +244,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          ...getAuthHeaders(),
+          'x-admin-passcode': storedPasscode,
         },
         body: JSON.stringify({ status: targetStatus }),
       });
-
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -568,93 +289,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     if (isAuthenticated) {
       fetchStats();
       fetchDocuments();
-      fetchLastDiagnostic();
     }
   }, [isAuthenticated]);
 
-  // Multi-step Authentication Handlers:
-  // Step 1: Submit master passcode to receive cryptographic challenge
-  const handleStep1Submit = async (e: React.FormEvent) => {
+  // Handle Passcode Submission
+  const handleVerifyPasscode = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanPasscode = passcode.trim();
-    if (!cleanPasscode) {
-      setAuthError('Please enter the administrative passcode.');
-      return;
-    }
     setIsVerifying(true);
     setAuthError(null);
 
     try {
-      const res = await fetch('/api/admin/auth/step1', {
+      const res = await fetch('/api/admin/verify-passcode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passcode: cleanPasscode }),
+        body: JSON.stringify({ passcode: passcode.trim() }),
       });
       const data = await res.json();
-      if (res.ok && data.success && data.challengeToken) {
-        setChallengeToken(data.challengeToken);
-        setAuthStep(2);
-        setAuthError(null);
-      } else {
-        setAuthError(data.message || 'Invalid administrative passcode.');
-      }
-    } catch (err: any) {
-      setAuthError('Connection error while contacting authentication gateway.');
-    } finally {
-      setIsVerifying(false);
-    }
-  };
-
-  // Step 2: Submit security verification challenge & statutory authority declaration
-  const handleStep2Submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!authorityDeclaration) {
-      setAuthError('You must confirm the statutory compliance declaration to proceed.');
-      return;
-    }
-    setIsVerifying(true);
-    setAuthError(null);
-
-    try {
-      const res = await fetch('/api/admin/auth/step2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          challengeToken,
-          securityPin: securityPin.trim(),
-          authorityDeclaration: true,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success && data.sessionToken) {
-        const cleanPasscode = passcode.trim();
-        // Strictly session-bound: stored exclusively in sessionStorage (purged on tab/window close)
-        try {
-          sessionStorage.setItem('ipsakti_admin_authenticated', 'true');
-          sessionStorage.setItem('ipsakti_admin_session_token', data.sessionToken);
-          sessionStorage.setItem('ipsakti_admin_passcode', cleanPasscode);
-
-          // Purge localStorage to prevent credential leakage
-          localStorage.removeItem('ipsakti_admin_authenticated');
-          localStorage.removeItem('ipsakti_admin_session_token');
-          localStorage.removeItem('ipsakti_admin_passcode');
-        } catch {
-          // ignore
-        }
-
-        setSessionToken(data.sessionToken);
+      if (res.ok && data.success) {
         setIsAuthenticated(true);
-        setAuthError(null);
-        if (onSessionChange) {
-          onSessionChange(true);
-        }
+        sessionStorage.setItem('ipsakti_admin_authenticated', 'true');
+        sessionStorage.setItem('ipsakti_admin_passcode', passcode.trim());
         fetchStats();
-        fetchDocuments();
       } else {
-        setAuthError(data.message || 'Security verification failed.');
+        setAuthError(data.message || 'Incorrect administrative passcode.');
       }
     } catch (err: any) {
-      setAuthError('Security verification failed. Please try again.');
+      setAuthError('Connection error while contacting administrative endpoint.');
     } finally {
       setIsVerifying(false);
     }
@@ -666,20 +326,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     setSuggestion(null);
     setIngestionMessage(null);
 
+    const activePasscode = sessionStorage.getItem('ipsakti_admin_passcode') || passcode;
+
     try {
       const res = await fetch('/api/admin/suggest-metadata', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...getAuthHeaders(),
+          'x-admin-passcode': activePasscode,
         },
         body: JSON.stringify({ rawText: file.rawText }),
       });
-
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
 
       if (!res.ok) {
         throw new Error(`Model analysis failed: ${res.statusText}`);
@@ -730,99 +387,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     }
   }, [currentIndex, queue]);
 
-  // Extract plain text from a PDF file using pdf.js and normalize OCR/diacritic artifacts
-  const extractPdfText = async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const pageTexts: string[] = [];
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
-      const rawPageText = content.items
-        .map((item: any) => ('str' in item ? item.str : ''))
-        .join(' ');
-
-      // Clean broken spaced-out diacritics and legacy font encoding artifacts
-      const cleaned = rawPageText
-        .replace(/\b([a-zA-Z])\s+([āīūṛḷēōĀĪŪṚḶĒŌ])\s+([a-zA-Z])\b/g, '$1$2$3')
-        .replace(/([a-zA-ZāīūṛḷēōĀĪŪṚḶĒŌ])\s+([āīūṛḷēō])/g, '$1$2')
-        .replace(/([āīūṛḷēō])\s+([a-zA-Zāīūṛḷēō])/g, '$1$2')
-        .replace(/Kalpan\s*ā\s*Paribh\s*ā\s*¾\s*ā/gi, 'Kalpana Paribhasha')
-        .replace(/Ś\s*ā\s*r\s*¬\s*g\s*a\s*d\s*h\s*a\s*r\s*a/gi, 'Sharangadhara')
-        .replace(/Caraka\s*sa\s*¼\s*hit\s*ā/gi, 'Charaka Samhita')
-        .replace(/p\s*ā\s*k\s*a/gi, 'paka')
-        .replace(/lak\s*¾\s*a\s*´\s*a/gi, 'lakshana')
-        .replace(/C\s*ū\s*r\s*´\s*a/gi, 'Churna')
-        .replace(/¾/g, 'sh')
-        .replace(/¼/g, 'm')
-        .replace(/´/g, 'n')
-        .replace(/¬/g, 'ng')
-        .replace(/±/g, 'D')
-        .replace(/°/g, 't')
-        .replace(/[ \t]+/g, ' ');
-
-      pageTexts.push(cleaned);
-    }
-    return pageTexts.join('\n\n');
-  };
-
-  // Extract plain text from a modern Word (.docx) file using mammoth
-  const extractDocxText = async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer();
-    const result = await mammoth.extractRawText({ arrayBuffer });
-    return result.value;
-  };
-
   // Add files to queue
   const handleFilesAdded = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
 
     const newFiles: QueuedFile[] = [];
-    const skippedFiles: string[] = [];
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      const lowerName = file.name.toLowerCase();
-      const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf');
-      const isDocx =
-        file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        lowerName.endsWith('.docx');
-      const isLegacyDoc = lowerName.endsWith('.doc') && !isDocx;
-
-      if (isLegacyDoc) {
-        // Legacy binary .doc (pre-2007 Word format) cannot be reliably parsed
-        // client-side. Rather than silently ingesting garbled binary text,
-        // skip it and tell the user to convert first.
-        skippedFiles.push(`${file.name} (legacy .doc not supported — re-save as .docx or .pdf)`);
-        continue;
-      }
-
       try {
-        let text: string;
-        if (isPdf) {
-          text = await extractPdfText(file);
-        } else if (isDocx) {
-          text = await extractDocxText(file);
-        } else {
-          text = await file.text();
-        }
-
+        const text = await file.text();
         if (text.trim()) {
           newFiles.push({
             name: file.name,
             size: file.size,
             rawText: text,
           });
-        } else {
-          skippedFiles.push(`${file.name} (no extractable text — may be a scanned/image-only file)`);
         }
       } catch (err) {
-        skippedFiles.push(`${file.name} (failed to read)`);
         console.warn(`Could not read file ${file.name}`, err);
       }
-    }
-
-    if (skippedFiles.length > 0) {
-      setIngestionMessage(`Skipped ${skippedFiles.length} file(s): ${skippedFiles.join('; ')}`);
     }
 
     if (newFiles.length > 0) {
@@ -831,6 +414,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
       if (queue.length === 0) {
         setCurrentIndex(0);
       }
+    }
+  };
+
+  // Load sample documents directly for one-click testing
+  const handleLoadSamples = () => {
+    setQueue((prev) => [...prev, ...SAMPLE_DOCS]);
+    if (queue.length === 0) {
+      setCurrentIndex(0);
     }
   };
 
@@ -852,6 +443,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     if (queue.length === 0 || currentIndex >= queue.length) return;
 
     const currentFile = queue[currentIndex];
+    const activePasscode = sessionStorage.getItem('ipsakti_admin_passcode') || passcode;
     const correctionsCount = calculateCorrectionsCount();
 
     setIsIngesting(true);
@@ -873,15 +465,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...getAuthHeaders(),
+          'x-admin-passcode': activePasscode,
         },
         body: JSON.stringify(payload),
       });
-
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
 
       const data = await res.json();
       if (!res.ok) {
@@ -920,250 +507,64 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
     }
   };
 
-  // Purge all documents and chunks from the database
-  const handlePurgeAllDocuments = async () => {
-    if (
-      !window.confirm(
-        'Are you sure you want to purge all documents and vector chunks from the database? This action will completely clear the corpus so only your newly uploaded authentic documents exist.'
-      )
-    ) {
-      return;
-    }
-    try {
-      setIsLoadingDocs(true);
-      const res = await fetch('/api/admin/documents/purge-all', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAuthHeaders(),
-        },
-      });
-
-      if (res.status === 401) {
-        handleAuthFailure();
-        return;
-      }
-
-      const data = await res.json();
-      if (data.success) {
-        setStatusFeedback({
-          type: 'success',
-          message: data.message || 'All documents successfully purged from database.',
-        });
-        await Promise.all([fetchStats(), fetchDocuments()]);
-      } else {
-        setStatusFeedback({
-          type: 'error',
-          message: data.error || 'Failed to purge documents.',
-        });
-      }
-    } catch (err: any) {
-      setStatusFeedback({
-        type: 'error',
-        message: 'Network error while purging documents: ' + err.message,
-      });
-    } finally {
-      setIsLoadingDocs(false);
-    }
-  };
-
-  // If NOT authenticated, show the multi-step passcode and security challenge lock screen
+  // If NOT authenticated, show the passcode lock screen
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
         <div className="w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl p-8 shadow-2xl space-y-6">
           <div className="text-center space-y-2">
-            <div className="inline-flex p-3 rounded-2xl bg-teal-950 border border-teal-700/60 text-emerald-400 mb-2 shadow-inner">
+            <div className="inline-flex p-3 rounded-2xl bg-teal-950 border border-teal-700/60 text-emerald-400 mb-2">
               <KeyRound className="w-7 h-7" />
             </div>
             <h1 className="text-xl font-bold text-white tracking-wide font-display">
               Administrative Corpus Ingestion
             </h1>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Session-bound authentication with multi-step statutory verification to access corpus ingestion & vector management.
+            <p className="text-xs text-slate-400">
+              Passcode protected portal for statutory Acts, TKDL monographs & vector indexing.
             </p>
           </div>
 
-          {/* Multi-step progress indicator */}
-          <div className="flex items-center justify-center gap-2 pt-1 pb-1">
-            <div
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
-                authStep === 1
-                  ? 'bg-teal-950 border-teal-500 text-teal-300'
-                  : 'bg-emerald-950/60 border-emerald-700 text-emerald-300'
-              }`}
-            >
-              {authStep > 1 ? (
-                <Check className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <span className="w-4 h-4 rounded-full bg-teal-800 text-[10px] flex items-center justify-center">
-                  1
-                </span>
-              )}
-              <span>Passcode</span>
+          <form onSubmit={handleVerifyPasscode} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
+                Enter Admin Passcode
+              </label>
+              <input
+                id="admin-passcode-input"
+                type="password"
+                value={passcode}
+                onChange={(e) => setPasscode(e.target.value)}
+                placeholder="Enter ADMIN_PASSCODE..."
+                autoFocus
+                className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+              />
             </div>
-            <div className="w-6 h-0.5 bg-slate-700" />
-            <div
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${
-                authStep === 2
-                  ? 'bg-teal-950 border-teal-500 text-teal-300'
-                  : 'bg-slate-900 border-slate-700 text-slate-400'
-              }`}
+
+            {authError && (
+              <div className="p-3 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <button
+              id="admin-passcode-submit"
+              type="submit"
+              disabled={isVerifying || !passcode.trim()}
+              className="w-full py-2.5 px-4 rounded-xl bg-[#0B3B32] hover:bg-[#125447] text-white font-bold text-sm transition-all disabled:opacity-50 cursor-pointer shadow-md"
             >
-              <span className="w-4 h-4 rounded-full bg-slate-800 text-[10px] flex items-center justify-center">
-                2
-              </span>
-              <span>Verification</span>
-            </div>
-          </div>
+              {isVerifying ? 'Authenticating...' : 'Unlock Admin Portal'}
+            </button>
+          </form>
 
-          {authStep === 1 ? (
-            /* STEP 1: Passcode Form */
-            <form onSubmit={handleStep1Submit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
-                  Step 1: Master Administrative Passcode
-                </label>
-                <div className="relative">
-                  <input
-                    id="admin-passcode-input"
-                    type={showPassword ? 'text' : 'password'}
-                    value={passcode}
-                    onChange={(e) => setPasscode(e.target.value)}
-                    placeholder="Enter administrative passcode..."
-                    autoFocus
-                    className="w-full px-4 py-2.5 pr-11 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1 cursor-pointer transition-colors"
-                    title={showPassword ? 'Hide passcode' : 'Show passcode'}
-                    aria-label={showPassword ? 'Hide passcode' : 'Show passcode'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <p className="text-[11px] text-slate-400 mt-1.5">
-                  Default deployment passcode: <code className="text-teal-300 font-mono">ipsakti2026</code>
-                </p>
-              </div>
-
-              {authError && (
-                <div className="p-3 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              <button
-                id="admin-step1-submit"
-                type="submit"
-                disabled={isVerifying || !passcode.trim()}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#0B3B32] hover:bg-[#125447] text-white font-bold text-sm transition-all disabled:opacity-50 cursor-pointer shadow-md flex items-center justify-center gap-2"
-              >
-                {isVerifying ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Verifying Passcode...</span>
-                  </>
-                ) : (
-                  <>
-                    <Lock className="w-4 h-4" />
-                    <span>Proceed to Step 2 Verification</span>
-                  </>
-                )}
-              </button>
-            </form>
-          ) : (
-            /* STEP 2: Security Verification & Statutory Authority Declaration */
-            <form onSubmit={handleStep2Submit} className="space-y-4">
-              <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Step 1 Passcode verified. Challenge token issued.</span>
-              </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                  Step 2: Department Security PIN / Authorization Key
-                </label>
-                <input
-                  id="admin-security-pin-input"
-                  type="password"
-                  value={securityPin}
-                  onChange={(e) => setSecurityPin(e.target.value)}
-                  placeholder="Enter administrative security PIN"
-                  autoComplete="off"
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 font-mono"
-                />
-              </div>
-
-              {/* Statutory Compliance Declaration */}
-              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-700 text-xs space-y-2">
-                <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                  <input
-                    id="admin-declaration-checkbox"
-                    type="checkbox"
-                    checked={authorityDeclaration}
-                    onChange={(e) => setAuthorityDeclaration(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 rounded text-teal-600 bg-slate-900 border-slate-700 focus:ring-teal-500 cursor-pointer"
-                  />
-                  <span className="text-slate-300 leading-snug">
-                    I declare administrative authority to manage the IP-SAKTI knowledge base under the Drugs & Cosmetics Act, Indian Patents Act, and Biological Diversity Act frameworks.
-                  </span>
-                </label>
-              </div>
-
-              {authError && (
-                <div className="p-3 rounded-lg bg-red-950/60 border border-red-800 text-red-300 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span>{authError}</span>
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthStep(1);
-                    setAuthError(null);
-                  }}
-                  className="w-1/3 py-2.5 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold transition-all cursor-pointer"
-                >
-                  Back
-                </button>
-                <button
-                  id="admin-step2-submit"
-                  type="submit"
-                  disabled={isVerifying || !authorityDeclaration}
-                  className="w-2/3 py-2.5 px-4 rounded-xl bg-[#0B3B32] hover:bg-[#125447] text-white font-bold text-sm transition-all disabled:opacity-50 cursor-pointer shadow-md flex items-center justify-center gap-2"
-                >
-                  {isVerifying ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Authorizing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck className="w-4 h-4" />
-                      <span>Authorize Session</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          )}
-
-          <div className="pt-3 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-400">
+          <div className="pt-2 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-500">
             <button
               onClick={onNavigateHome}
-              className="flex items-center gap-1.5 hover:text-slate-200 transition-colors cursor-pointer"
+              className="flex items-center gap-1 hover:text-slate-300 transition-colors cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5" /> Return to Public Console
             </button>
-            <span className="font-mono text-[10px] text-teal-400/80 bg-teal-950/50 border border-teal-800/40 px-2 py-0.5 rounded">
-              SESSION-BOUND
-            </span>
+            <span className="font-mono text-[10px] text-slate-500">Env: ADMIN_PASSCODE</span>
           </div>
         </div>
       </div>
@@ -1197,106 +598,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
           </div>
 
           <div className="flex items-center space-x-3">
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950/70 border border-emerald-600/50 text-emerald-300">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              Session-Bound Admin
-            </span>
             <button
-              id="admin-exit-to-app-btn"
               onClick={onNavigateHome}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-teal-900 hover:bg-teal-800 text-teal-200 hover:text-white text-xs font-semibold transition-colors cursor-pointer border border-teal-700 shadow-xs"
-              title="Return to public assistant (keeps your admin session active)"
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-teal-900 hover:bg-teal-800 text-teal-200 hover:text-white text-xs font-semibold transition-colors cursor-pointer border border-teal-700"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>Exit to Public App</span>
-            </button>
-            <button
-              id="admin-logout-btn"
-              onClick={handleLogout}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 text-rose-200 hover:text-white text-xs font-semibold transition-colors cursor-pointer border border-rose-800/60 shadow-xs"
-              title="End administrative session and lock portal"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Log Out</span>
             </button>
           </div>
         </div>
       </header>
 
-      {/* Navigation Subheader Tabs */}
-      <div className="bg-[#082C25] border-t border-teal-800/60 px-6 py-2.5 shadow-inner">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <nav className="flex items-center space-x-2">
-            <button
-              id="admin-tab-corpus"
-              type="button"
-              onClick={() => setActiveAdminTab('corpus')}
-              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeAdminTab === 'corpus'
-                  ? 'bg-white text-teal-950 shadow-xs'
-                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>Corpus & Ingestion</span>
-              <span
-                className={`px-1.5 py-0.5 text-[10px] rounded-full font-bold ${
-                  activeAdminTab === 'corpus' ? 'bg-teal-100 text-teal-900' : 'bg-teal-950 text-teal-300'
-                }`}
-              >
-                {documents.length || stats.totalDocuments}
-              </span>
-            </button>
-
-            <button
-              id="admin-tab-diagnostic"
-              type="button"
-              onClick={() => setActiveAdminTab('diagnostic')}
-              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeAdminTab === 'diagnostic'
-                  ? 'bg-white text-teal-950 shadow-xs'
-                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5" />
-              <span>Retrieval Diagnostics & Chunk Inspector</span>
-              {lastDiagnostic && (
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              )}
-            </button>
-
-            <button
-              id="admin-tab-benchmarks"
-              type="button"
-              onClick={() => setActiveAdminTab('benchmarks')}
-              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeAdminTab === 'benchmarks'
-                  ? 'bg-white text-teal-950 shadow-xs'
-                  : 'text-teal-200 hover:text-white hover:bg-teal-900/60'
-              }`}
-            >
-              <Award className="w-3.5 h-3.5" />
-              <span>AYUSH Ground Truth Benchmarks</span>
-              <span
-                className={`px-1.5 py-0.5 text-[10px] rounded-full font-bold ${
-                  activeAdminTab === 'benchmarks' ? 'bg-amber-100 text-amber-900' : 'bg-amber-950 text-amber-300'
-                }`}
-              >
-                {AYURVEDIC_TEST_SUITE.length}
-              </span>
-            </button>
-          </nav>
-
-          <div className="text-xs text-teal-300/80 font-mono hidden md:block">
-            RAG Pipeline Status: <strong className="text-emerald-300 font-sans">Active & Grounded</strong>
-          </div>
-        </div>
-      </div>
-
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto w-full p-6 space-y-6 flex-1">
-        {activeAdminTab === 'corpus' && (
-          <>
         {/* Running Summary Dashboard */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center space-x-3">
@@ -1369,7 +683,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
                 type="file"
                 ref={fileInputRef}
                 multiple
-                accept=".txt,.md,.json,.csv,.doc,.docx,.pdf"
+                accept=".txt,.md,.json,.csv,.doc,.docx"
                 className="hidden"
                 onChange={(e) => handleFilesAdded(e.target.files)}
               />
@@ -1401,6 +715,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
                 <FolderUp className="w-3.5 h-3.5 text-teal-800" />
                 <span>Upload Folder</span>
               </button>
+
+              <button
+                type="button"
+                onClick={handleLoadSamples}
+                className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Load Sample Acts</span>
+              </button>
             </div>
           </div>
 
@@ -1423,7 +746,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
                 </h3>
                 <p className="text-xs text-slate-500 mt-1 max-w-md">
                   Supports Indian Patent Acts, TKDL monographs, ABS notifications, or foreign patent conventions.
-                  Click <strong>"Select Files"</strong> or <strong>"Upload Folder"</strong> to begin.
+                  Or click <strong>"Load Sample Acts"</strong> above for an instant test run.
                 </p>
               </div>
             </div>
@@ -1660,7 +983,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
                     </div>
 
                     <div className="p-2.5 rounded-lg bg-teal-50/70 border border-teal-200 text-[11px] text-teal-900 leading-relaxed">
-                      <strong>Chunking Rule:</strong> Partitioned at natural legal clauses into chunks of roughly 150-400 words. Each chunk is embedded with <strong>gemini-embedding-2</strong> (falling back to <strong>gemini-embedding-001</strong> if unavailable) at <strong>output_dimensionality=768</strong>.
+                      <strong>Chunking Rule:</strong> Partitioned at natural legal clauses into chunks of roughly 150-400 words. Each chunk is embedded with <strong>gemini-embedding-2-preview</strong> at <strong>output_dimensionality=768</strong>.
                     </div>
                   </div>
                 </div>
@@ -1709,18 +1032,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDocs ? 'animate-spin' : ''}`} />
                 <span>Refresh</span>
-              </button>
-
-              <button
-                id="btn-purge-all-documents"
-                type="button"
-                onClick={handlePurgeAllDocuments}
-                disabled={isLoadingDocs}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 hover:text-rose-800 transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
-                title="Purge all documents from database"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                <span>Purge Corpus</span>
               </button>
             </div>
           </div>
@@ -1876,16 +1187,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
                 <span>Loading documents from database...</span>
               </div>
             ) : documents.length === 0 ? (
-              <div className="p-16 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-3">
-                <div className="p-4 rounded-2xl bg-teal-50 border border-teal-100 text-teal-850">
-                  <Database className="w-8 h-8 text-teal-700" />
-                </div>
-                <div className="max-w-md space-y-1">
-                  <p className="text-sm font-bold text-slate-900">Knowledge Base is Empty & Ready</p>
-                  <p className="text-slate-500 leading-relaxed text-xs">
-                    Only authentic, administrator-verified statutory Acts, notifications, and gazettes uploaded above will be indexed into the knowledge base.
-                  </p>
-                </div>
+              <div className="p-12 text-center text-xs text-slate-400">
+                No documents found in the database. Use the Add Document flow above or load sample statutory acts.
               </div>
             ) : (
               (() => {
@@ -2168,37 +1471,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onNavigateHome, onSess
             </div>
           </div>
         </section>
-        </>
-        )}
-
-        {activeAdminTab === 'diagnostic' && (
-          <AdminDiagnosticView
-            lastDiagnostic={lastDiagnostic}
-            isLoadingDiagnostic={isLoadingDiagnostic}
-            diagnosticError={diagnosticError}
-            onRefreshDiagnostic={fetchLastDiagnostic}
-            testQueryInput={testQueryInput}
-            onTestQueryInputChange={setTestQueryInput}
-            testQueryJurisdiction={testQueryJurisdiction}
-            onTestQueryJurisdictionChange={setTestQueryJurisdiction}
-            testQueryLanguage={testQueryLanguage}
-            onTestQueryLanguageChange={setTestQueryLanguage}
-            isTestingQuery={isTestingQuery}
-            testQueryResult={testQueryResult}
-            onRunTestQuery={handleRunTestQuery}
-            onSwitchToBenchmarks={() => setActiveAdminTab('benchmarks')}
-          />
-        )}
-
-        {activeAdminTab === 'benchmarks' && (
-          <AdminBenchmarksView
-            onRunTestQuestion={(q, jur) => {
-              setActiveAdminTab('diagnostic');
-              handleRunTestQuery(q, jur);
-            }}
-            onSwitchToDiagnostic={() => setActiveAdminTab('diagnostic')}
-          />
-        )}
       </main>
     </div>
   );

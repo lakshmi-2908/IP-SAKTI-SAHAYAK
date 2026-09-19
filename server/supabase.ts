@@ -1,21 +1,8 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import pg from 'pg';
-import dns from 'dns';
-
-// In Node 18+, prefer IPv4 DNS resolution to prevent ENETUNREACH on platforms without IPv6 (e.g. Render)
-try {
-  if (typeof dns.setDefaultResultOrder === 'function') {
-    dns.setDefaultResultOrder('ipv4first');
-  }
-} catch {
-  // Ignore in environments where setDefaultResultOrder is unavailable
-}
 
 let supabaseClient: SupabaseClient | null = null;
 let pgPool: pg.Pool | null = null;
-let pgDirectUnreachableUntil = 0;
-let lastPgDirectError: string | null = null;
-let hasLoggedDirectPgNotice = false;
 
 /**
  * Returns a lazily-initialized Supabase administrative client
@@ -42,66 +29,9 @@ export function getSupabaseClient(): SupabaseClient | null {
 }
 
 /**
- * Marks direct PostgreSQL as unreachable (e.g. on ENETUNREACH or timeout)
- * to open the circuit breaker and avoid 2.5s blocking delays on subsequent requests.
- */
-export function markPostgresDirectFailure(err: any): void {
-  const msg = err?.message || String(err);
-  const code = err?.code || '';
-  lastPgDirectError = `${code ? `[${code}] ` : ''}${msg}`;
-
-  const isNetworkUnreachable =
-    code === 'ENETUNREACH' ||
-    code === 'EHOSTUNREACH' ||
-    code === 'ETIMEDOUT' ||
-    msg.includes('ENETUNREACH') ||
-    msg.includes('network is unreachable');
-
-  if (isNetworkUnreachable) {
-    // 60-second cooldown before probing direct connection again
-    pgDirectUnreachableUntil = Date.now() + 60_000;
-    if (!hasLoggedDirectPgNotice) {
-      hasLoggedDirectPgNotice = true;
-      console.warn(
-        `[Postgres Pool] Direct PostgreSQL connection unreachable (${msg}). This is expected on platforms without IPv6 routing (such as Render). Direct PG attempts will be bypassed for 60s, automatically routing requests via Supabase REST/RPC API. To enable direct PostgreSQL on Render, configure DATABASE_URL using the Supabase Connection Pooler URL (aws-0-*.pooler.supabase.com:6543).`
-      );
-    }
-  }
-}
-
-/**
- * Checks whether direct PostgreSQL pool is configured and not currently marked unreachable.
- */
-export function isPostgresDirectAvailable(): boolean {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl || databaseUrl.includes('[YOUR-PASSWORD]') || databaseUrl.includes('[PASSWORD]')) {
-    return false;
-  }
-  // Detect direct Supabase port 5432 which is IPv6-only and fails on Render
-  if (databaseUrl.includes('.supabase.co:5432') && !databaseUrl.includes('pooler.supabase.com')) {
-    if (!hasLoggedDirectPgNotice) {
-      hasLoggedDirectPgNotice = true;
-      console.log(
-        '[Postgres Pool] Detected direct Supabase endpoint (:5432). Supabase direct endpoints are IPv6-only. Routing database operations seamlessly via Supabase REST/RPC API. (To use direct TCP Postgres on Render, use the Supabase Connection Pooler string ending in :6543).'
-      );
-    }
-    return false;
-  }
-  if (Date.now() < pgDirectUnreachableUntil) {
-    return false;
-  }
-  return true;
-}
-
-/**
- * Returns a lazily-initialized PostgreSQL pool if DATABASE_URL or direct connection is provided
- * and the circuit breaker is healthy.
+ * Returns a lazily-initialized PostgreSQL pool if DATABASE_URL or direct connection is provided.
  */
 export function getPgPool(): pg.Pool | null {
-  if (!isPostgresDirectAvailable()) {
-    return null;
-  }
-
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl || databaseUrl.includes('[YOUR-PASSWORD]') || databaseUrl.includes('[PASSWORD]')) {
     return null;
@@ -111,13 +41,13 @@ export function getPgPool(): pg.Pool | null {
     try {
       pgPool = new pg.Pool({
         connectionString: databaseUrl,
-        connectionTimeoutMillis: 2000,
+        connectionTimeoutMillis: 2500,
         ssl: {
           rejectUnauthorized: false,
         },
       });
       pgPool.on('error', (err) => {
-        markPostgresDirectFailure(err);
+        console.warn('[Postgres Pool] Idle client error caught gracefully:', err.message);
       });
     } catch (err: any) {
       console.warn('[Postgres Pool] Initialization error:', err.message);
@@ -137,14 +67,9 @@ export async function testConnection(): Promise<{
   message: string;
   tables?: string[];
   embeddingDimension?: number;
-  postgresDirectStatus?: string;
-  supabaseApiStatus?: string;
 }> {
-  let directPgOk = false;
-  let directPgMsg = 'Not configured';
+  // Try direct Postgres connection first if available
   const pool = getPgPool();
-
-  // 1. Test direct Postgres connection if configured
   if (pool) {
     try {
       const client = await pool.connect();
@@ -155,83 +80,50 @@ export async function testConnection(): Promise<{
           WHERE table_schema = 'public'
         `);
         const tables = res.rows.map((r: { table_name: string }) => r.table_name);
-        directPgOk = true;
-        directPgMsg = `Connected directly via DATABASE_URL (${tables.length} tables found)`;
         return {
           connected: true,
           type: 'postgres_direct',
           message: 'Connected to Supabase PostgreSQL database directly via DATABASE_URL.',
           tables,
           embeddingDimension: 768,
-          postgresDirectStatus: directPgMsg,
         };
       } finally {
         client.release();
       }
     } catch (err: any) {
-      markPostgresDirectFailure(err);
-      directPgMsg = `Direct connection failed: ${err.message}`;
+      console.warn('Direct PostgreSQL connection error:', err.message);
     }
   }
 
-  // 2. Test Supabase REST client
+  // Fallback to Supabase REST client
   const client = getSupabaseClient();
   if (!client) {
     return {
       connected: false,
       type: 'none',
-      message: directPgMsg.includes('failed')
-        ? `Postgres direct connection failed (${directPgMsg}) and Supabase REST credentials are not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.`
-        : 'Database credentials not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.',
+      message: 'Supabase credentials not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.',
       embeddingDimension: 768,
-      postgresDirectStatus: directPgMsg,
     };
   }
 
   try {
-    // Probe documents table
-    const { data: docData, error } = await client.from('documents').select('id').limit(1);
-
-    if (error) {
-      const isMissingTable =
-        error.message?.includes('schema cache') ||
-        error.message?.includes('relation') ||
-        error.code === 'PGRST205' ||
-        error.code === '42P01';
-
-      if (isMissingTable) {
-        return {
-          connected: true,
-          type: 'supabase_api',
-          message: `Connected to Supabase project (${process.env.SUPABASE_URL}), but table 'public.documents' was not found in the schema cache. Please execute supabase/schema.sql in your Supabase SQL Editor.`,
-          embeddingDimension: 768,
-          postgresDirectStatus: directPgMsg,
-          supabaseApiStatus: `Table 'public.documents' missing from schema cache: ${error.message}`,
-        };
-      }
-
-      if (error.code !== 'PGRST116') {
-        return {
-          connected: true,
-          type: 'supabase_api',
-          message: `Connected to Supabase REST endpoint (${process.env.SUPABASE_URL}), with note: ${error.message}`,
-          embeddingDimension: 768,
-          postgresDirectStatus: directPgMsg,
-          supabaseApiStatus: error.message,
-        };
-      }
+    // Probe documents or conversations table
+    const { error } = await client.from('documents').select('id').limit(1);
+    if (error && error.code !== 'PGRST116') {
+      return {
+        connected: true,
+        type: 'supabase_api',
+        message: `Connected to Supabase REST endpoint (${process.env.SUPABASE_URL}), but tables may need initialization: ${error.message}`,
+        embeddingDimension: 768,
+      };
     }
 
     return {
       connected: true,
       type: 'supabase_api',
-      message: directPgOk
-        ? 'Successfully connected to Supabase project.'
-        : 'Successfully connected to Supabase project via REST API.',
+      message: 'Successfully connected to Supabase project.',
       tables: ['documents', 'chunks', 'conversations', 'escalations', 'feedback'],
       embeddingDimension: 768,
-      postgresDirectStatus: directPgMsg,
-      supabaseApiStatus: 'Connected and verified',
     };
   } catch (err: any) {
     return {
@@ -239,8 +131,6 @@ export async function testConnection(): Promise<{
       type: 'supabase_api',
       message: `Failed to query Supabase: ${err.message}`,
       embeddingDimension: 768,
-      postgresDirectStatus: directPgMsg,
-      supabaseApiStatus: err.message,
     };
   }
 }

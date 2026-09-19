@@ -36,8 +36,47 @@ export const RightRail: React.FC<RightRailProps> = ({
   onEditClassification,
   onOpenClassifyProduct,
 }) => {
-  const activeClassification = classification;
-  const activeSources = sources;
+  // Scaffolding demo preview toggle to inspect both empty state and populated mock state
+  const [showDemoPreview, setShowDemoPreview] = useState<boolean>(false);
+
+  // Demo populated state with every placeholder prefixed with "[DEMO]"
+  const demoClassification = {
+    productName: '[DEMO] Ashwagandha Enhanced Aqueous Extract Capsule',
+    ayurvedicCategory: '[DEMO] Proprietary Ayurvedic Medicine (Rule 158B)',
+    regulatoryRegime: '[DEMO] Ayush Manufacturing Licence Form 25D',
+    scheduledTextsReference: '[DEMO] Formulated with Withania somnifera per Ayurvedic Pharmacopoeia of India (API) Part I, Vol I',
+    clinicalSafetyRequired: true,
+    tkdlStatus: '[DEMO] Prior art referenced in Traditional Knowledge Digital Library (TKDL) - TKDL ID: JA7/1202',
+    isClassified: true,
+  };
+
+  const demoSources: SourceCitation[] = [
+    {
+      id: 'demo-src-1',
+      actOrBody: '[DEMO] The Patents Act, 1970',
+      sectionOrArticle: '[DEMO] Section 3(p)',
+      title: '[DEMO] Inventions relating to traditional knowledge or aggregation of known properties',
+      jurisdiction: 'India',
+      url: 'https://ipindia.gov.in',
+    },
+    {
+      id: 'demo-src-2',
+      actOrBody: '[DEMO] Drugs and Cosmetics Rules, 1945',
+      sectionOrArticle: '[DEMO] Rule 158B',
+      title: '[DEMO] Guidelines for issue of licence in respect of Ayurveda, Siddha or Unani drugs',
+      jurisdiction: 'India',
+    },
+    {
+      id: 'demo-src-3',
+      actOrBody: '[DEMO] Traditional Knowledge Digital Library (TKDL)',
+      sectionOrArticle: '[DEMO] CSIR-AYUSH Repository',
+      title: '[DEMO] Prior-art defensive database documentation on Withania somnifera applications',
+      jurisdiction: 'India',
+    },
+  ];
+
+  const activeClassification = showDemoPreview ? demoClassification : classification;
+  const activeSources = showDemoPreview ? demoSources : sources;
 
   const railContent = (
     <div className="flex flex-col h-full bg-[#FAFCFB] border-l border-slate-200 w-80 lg:w-88 shrink-0 overflow-hidden">
@@ -60,6 +99,23 @@ export const RightRail: React.FC<RightRailProps> = ({
           aria-label="Close summary sheet"
         >
           <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      {/* Demo Inspector Control (Temporary scaffolding to inspect populated state vs empty state) */}
+      <div className="px-4 py-2 bg-teal-900/5 border-b border-teal-800/10 flex items-center justify-between text-[11px]">
+        <span className="text-teal-900 font-medium flex items-center gap-1">
+          <span className="font-mono text-[10px] px-1 py-0.5 rounded bg-teal-800/10 text-teal-800">
+            [DEMO]
+          </span>
+          Mock Layout Preview
+        </span>
+        <button
+          id="toggle-demo-preview-button"
+          onClick={() => setShowDemoPreview(!showDemoPreview)}
+          className="text-teal-800 hover:text-teal-950 font-semibold underline underline-offset-2 cursor-pointer transition-colors text-[11px]"
+        >
+          {showDemoPreview ? 'Show Empty State' : 'Preview Populated State'}
         </button>
       </div>
 

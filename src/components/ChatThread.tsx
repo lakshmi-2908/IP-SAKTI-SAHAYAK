@@ -21,25 +21,6 @@ import {
 } from 'lucide-react';
 import { ChatMessage, Jurisdiction, Language, SourceCitation } from '../types';
 
-// Format long or noisy section labels into clean readable titles
-function formatSectionLabel(label?: string | null): string {
-  if (!label) return 'Relevant Provision';
-  let clean = label.replace(/\r?\n|\r/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  // Strip trailing or leading punctuation
-  clean = clean.replace(/^[#\-\*\s]+/, '');
-  // If it has a colon or dot early on, cut at the boundary
-  if (clean.includes(':')) {
-    const parts = clean.split(':');
-    if (parts[0].trim().length >= 3 && parts[0].trim().length <= 45) {
-      return parts[0].trim();
-    }
-  }
-  if (clean.length > 45) {
-    return clean.slice(0, 42) + '...';
-  }
-  return clean || 'Relevant Provision';
-}
-
 interface ChatThreadProps {
   messages: ChatMessage[];
   onSendMessage: (text: string) => void;
@@ -372,12 +353,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
                                               </span>
                                             )}
                                           </div>
-                                          <div className="text-teal-900 font-mono text-[10.5px] mt-0.5 truncate max-w-full font-medium" title={citation.sectionLabel || citation.sectionOrArticle || ''}>
-                                            {formatSectionLabel(citation.sectionLabel || citation.sectionOrArticle)}
+                                          <div className="text-teal-900 font-mono text-[10.5px] mt-0.5">
+                                            {citation.sectionLabel || citation.sectionOrArticle}
                                           </div>
                                           {citation.snippet && (
-                                            <div className="text-slate-600 text-[10.5px] mt-1 line-clamp-2 italic break-words">
-                                              "{citation.snippet.length > 180 ? citation.snippet.slice(0, 177) + '...' : citation.snippet}"
+                                            <div className="text-slate-600 text-[10.5px] mt-1 line-clamp-2 italic">
+                                              "{citation.snippet}"
                                             </div>
                                           )}
                                           {citation.hindiParaphrase && (
@@ -429,12 +410,12 @@ export const ChatThread: React.FC<ChatThreadProps> = ({
                                         </span>
                                       )}
                                     </div>
-                                    <div className="text-teal-900 font-mono text-[10.5px] mt-0.5 truncate max-w-full font-medium" title={citation.sectionLabel || citation.sectionOrArticle || ''}>
-                                      {formatSectionLabel(citation.sectionLabel || citation.sectionOrArticle)}
+                                    <div className="text-teal-900 font-mono text-[10.5px] mt-0.5">
+                                      {citation.sectionLabel || citation.sectionOrArticle}
                                     </div>
                                     {citation.snippet && (
-                                      <div className="text-slate-600 text-[10.5px] mt-1 line-clamp-2 italic break-words">
-                                        "{citation.snippet.length > 180 ? citation.snippet.slice(0, 177) + '...' : citation.snippet}"
+                                      <div className="text-slate-600 text-[10.5px] mt-1 line-clamp-2 italic">
+                                        "{citation.snippet}"
                                       </div>
                                     )}
                                     {citation.hindiParaphrase && (

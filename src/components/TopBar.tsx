@@ -8,7 +8,6 @@ import {
   FileCheck2,
   ChevronDown,
   Database,
-  ShieldAlert,
 } from 'lucide-react';
 import { Jurisdiction, Language } from '../types';
 
@@ -19,7 +18,6 @@ interface TopBarProps {
   onToggleLanguage: () => void;
   onOpenDisclaimer: () => void;
   onOpenDbStatus: () => void;
-  onOpenAdmin: () => void;
   onToggleMobileLeftRail: () => void;
   onToggleMobileRightRail: () => void;
   isMobileRightRailOpen: boolean;
@@ -32,24 +30,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleLanguage,
   onOpenDisclaimer,
   onOpenDbStatus,
-  onOpenAdmin,
   onToggleMobileLeftRail,
   onToggleMobileRightRail,
   isMobileRightRailOpen,
 }) => {
-  // Check if admin session is actively authenticated in sessionStorage (strictly session-bound)
-  const isStoredAdmin = (() => {
-    try {
-      return (
-        sessionStorage.getItem('ipsakti_admin_authenticated') === 'true' &&
-        (!!sessionStorage.getItem('ipsakti_admin_session_token') ||
-          !!sessionStorage.getItem('ipsakti_admin_passcode'))
-      );
-    } catch {
-      return false;
-    }
-  })();
-
   return (
     <header
       id="app-topbar"
@@ -152,29 +136,6 @@ export const TopBar: React.FC<TopBarProps> = ({
         >
           <Database className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="hidden xl:inline text-xs text-teal-100">Database</span>
-        </button>
-
-        {/* Admin Portal Button */}
-        <button
-          id="admin-portal-trigger-btn"
-          onClick={onOpenAdmin}
-          className="flex items-center space-x-1.5 p-1.5 sm:px-2.5 sm:py-1.5 rounded-full bg-teal-950/80 hover:bg-teal-900 text-emerald-300 hover:text-white border border-teal-700/50 transition-colors text-xs font-medium cursor-pointer"
-          title={
-            isStoredAdmin
-              ? 'Admin Ingestion Portal (Session Active — Alt+A)'
-              : 'Admin Ingestion Portal (Alt+A)'
-          }
-          aria-label="Admin Ingestion Portal"
-        >
-          <div className="relative">
-            <ShieldAlert className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
-            {isStoredAdmin && (
-              <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            )}
-          </div>
-          <span className="hidden md:inline text-xs text-emerald-200 font-semibold">
-            {isStoredAdmin ? 'Admin (Active)' : 'Admin'}
-          </span>
         </button>
 
         {/* Disclaimer Icon Button */}
